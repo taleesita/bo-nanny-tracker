@@ -278,9 +278,14 @@ var showWeekend = false;
 var payingWeek = false;
 
 // ====== HELPERS ======
+// Payment weeks run Sat-Fri: weekend work belongs to the NEXT Mon-Fri week
+// getMon returns the Saturday that starts the payment week
 function getMon(dt) {
   var d = new Date(dt); var day = d.getDay();
-  d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+  // day: 0=Sun,1=Mon,...,5=Fri,6=Sat
+  // daysSinceSat: Sat=0, Sun=1, Mon=2, Tue=3, Wed=4, Thu=5, Fri=6
+  var diff = (day + 1) % 7;
+  d.setDate(d.getDate() - diff);
   d.setHours(0,0,0,0); return d;
 }
 function ds(dt) { return dt.toISOString().split('T')[0]; }
@@ -317,9 +322,14 @@ function fmtHours(dy) {
   if (!dy.s && !dy.e) return '';
   return fmtTime(dy.s) + '\u2013' + fmtTime(dy.e) + ' (' + dy.h + 'h)';
 }
-function fmtWeekRange(mon) {
-  var f = new Date(mon); f.setDate(f.getDate() + 4);
-  return fmtShort(ds(mon)) + ' \u2013 ' + fmtShort(ds(f)) + ', ' + f.getFullYear();
+function fmtWeekRange(sat) {
+  // sat is the Saturday start; show Mon-Fri range
+  var m = new Date(sat); m.setDate(m.getDate() + 2); // Monday
+  var f = new Date(sat); f.setDate(f.getDate() + 6); // Friday
+  return fmtShort(ds(m)) + ' \u2013 ' + fmtShort(ds(f)) + ', ' + f.getFullYear();
+}
+function getMonFromSat(sat) {
+  var m = new Date(sat); m.setDate(m.getDate() + 2); return m;
 }
 function fmt$(amt) { return '$' + amt.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 function fmt$int(amt) { return '$' + Math.round(amt).toLocaleString(); }
@@ -383,13 +393,15 @@ function render() {
 }
 
 function renderWeek(el) {
-  var allDows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  // Week runs Sat-Fri; curWeek is the Saturday
+  var allDows = ['Sat','Sun','Mon','Tue','Wed','Thu','Fri'];
   var wkDays = [];
   for (var i = 0; i < 7; i++) {
     var dt = new Date(curWeek); dt.setDate(dt.getDate() + i);
     var id = ds(dt);
     var dy = ensure(id, allDows[i]);
-    if (i < 5 || showWeekend || dy.st !== '') wkDays.push(dy);
+    var isWknd = (i < 2); // Sat=0, Sun=1
+    if (!isWknd || showWeekend || dy.st !== '') wkDays.push(dy);
   }
   var wt = 0; wkDays.forEach(function(d) { wt += dayTotal(d); });
   var weekUnpaid = wkDays.filter(function(d) { return d.st === 'unpaid'; });
@@ -650,7 +662,8 @@ function renderHist(el) {
     h += '<div class="px-4 py-2.5 flex justify-between items-center cursor-pointer hover:bg-indigo-50" onclick="toggleHist(\'' + k + '\')">';
     // Left side: week label + day count + badge
     h += '<div class="flex items-center gap-2">';
-    h += '<span class="font-medium text-sm text-gray-800">Wk of ' + fmtShort(k) + '</span>';
+    var monDt = new Date(k + 'T12:00:00'); monDt.setDate(monDt.getDate() + 2);
+    h += '<span class="font-medium text-sm text-gray-800">Wk of ' + fmtShort(ds(monDt)) + '</span>';
     h += '<span class="text-xs text-gray-400">' + wk.length + ' days</span>';
     if (allPaid) {
       h += '<span class="chip bg-green-100 text-green-700">Paid</span>';
@@ -756,13 +769,14 @@ function toggleWeekend() { showWeekend = !showWeekend; render(); }
 function toggleHist(k) { var e = document.getElementById('hw-' + k); if (e) e.classList.toggle('hidden'); }
 
 function fillWeek() {
-  var allDows = ['Mon','Tue','Wed','Thu','Fri'];
+  // Only fill Mon-Fri (offset 2-6 from Saturday start)
+  var weekDows = ['Mon','Tue','Wed','Thu','Fri'];
   for (var i = 0; i < 5; i++) {
-    var dt = new Date(curWeek); dt.setDate(dt.getDate() + i);
-    var id = ds(dt); var dy = ensure(id, allDows[i]);
-    if (dy.st === '' && DTIMES[allDows[i]]) {
-      dy.s = DTIMES[allDows[i]][0]; dy.e = DTIMES[allDows[i]][1];
-      dy.h = DHRS[allDows[i]]; dy.a = TOLL; dy.c = 'regular';
+    var dt = new Date(curWeek); dt.setDate(dt.getDate() + i + 2); // +2 to skip Sat,Sun
+    var id = ds(dt); var dy = ensure(id, weekDows[i]);
+    if (dy.st === '' && DTIMES[weekDows[i]]) {
+      dy.s = DTIMES[weekDows[i]][0]; dy.e = DTIMES[weekDows[i]][1];
+      dy.h = DHRS[weekDows[i]]; dy.a = TOLL; dy.c = 'regular';
       dy.st = 'unpaid';
     }
   }
@@ -770,13 +784,13 @@ function fillWeek() {
 }
 
 function clearWeek() {
-  var allDows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var allDows = ['Sat','Sun','Mon','Tue','Wed','Thu','Fri'];
   var cleared = 0;
   for (var i = 0; i < 7; i++) {
     var dt = new Date(curWeek); dt.setDate(dt.getDate() + i);
     var dy = findDay(ds(dt));
     if (dy && dy.st !== 'paid') {
-      var isWknd = (i >= 5);
+      var isWknd = (i < 2); // Sat=0, Sun=1
       dy.s = ''; dy.e = ''; dy.h = 0; dy.a = 0; dy.n = '';
       dy.c = isWknd ? '' : 'regular'; dy.st = ''; dy.pd = null;
       cleared++;
@@ -791,7 +805,7 @@ function confirmPayWeek() {
   var dt = document.getElementById('pwDate').value;
   var amt = parseFloat(document.getElementById('pwAmt').value) || 0;
   if (!dt || amt <= 0) { alert('Enter date and amount'); return; }
-  for (var i = 0; i < 7; i++) {
+  for (var i = 0; i < 7; i++) { // Sat-Fri
     var d = new Date(curWeek); d.setDate(d.getDate() + i);
     var dy = findDay(ds(d));
     if (dy && dy.st === 'unpaid') { dy.st = 'paid'; dy.pd = dt; }
