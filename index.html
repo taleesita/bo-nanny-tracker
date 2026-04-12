@@ -126,14 +126,14 @@ auth.onAuthStateChanged(function(user) {
 
 // ====== FIRESTORE SYNC ======
 function saveToFirestore() {
-  if (\!currentUser) return;
+  if (!currentUser) return;
   db.collection('data').doc('days').set({ items: JSON.stringify(days) });
   db.collection('data').doc('payments').set({ items: JSON.stringify(pmts) });
   db.collection('data').doc('categories').set({ items: JSON.stringify(CATS) });
 }
 
 function loadFromFirestore() {
-  if (\!currentUser) return;
+  if (!currentUser) return;
   Promise.all([
     db.collection('data').doc('days').get(),
     db.collection('data').doc('payments').get(),
