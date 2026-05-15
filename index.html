@@ -723,11 +723,14 @@ function renderHist(el) {
       if (d.s && d.e) h += '<span class="text-xs text-gray-400">' + fmtTime(d.s) + '\u2013' + fmtTime(d.e) + '</span>';
       h += '</div><span class="font-medium text-indigo-600">' + fmt$(dayTotal(d)) + '</span></div>';
     });
-    // If payment exists, show summary row at bottom
+    // If payment exists, show summary row at bottom with delete option
     if (pmt) {
       h += '<div class="px-4 py-2 bg-green-50 flex justify-between items-center text-sm">';
       h += '<span class="text-green-700 font-medium">Payment on ' + fmtShort(pmt.dt) + '</span>';
-      h += '<span class="font-bold text-green-700">' + fmt$(pmt.amt) + '</span></div>';
+      h += '<div class="flex items-center gap-2">';
+      h += '<span class="font-bold text-green-700">' + fmt$(pmt.amt) + '</span>';
+      h += '<button onclick="event.stopPropagation();deletePayment(\'' + pmt.dt + '\')" class="text-xs text-red-400 hover:text-red-600">delete</button>';
+      h += '</div></div>';
     }
     h += '</div></div>';
   });
@@ -833,16 +836,25 @@ function clearWeek() {
 }
 
 // ====== PAY ======
+function deletePayment(pdt) {
+  // Revert all days paid on that date back to unpaid
+  days.forEach(function(dy) {
+    if (dy.pd === pdt) { dy.st = 'unpaid'; dy.pd = null; }
+  });
+  // Remove the payment record
+  pmts = pmts.filter(function(p) { return p.dt !== pdt; });
+  render();
+}
 function togglePayWeek() { payingWeek = !payingWeek; render(); }
 function confirmPayment() {
   var dt = document.getElementById('pwDate').value;
   var amt = parseFloat(document.getElementById('pwAmt').value) || 0;
-  if (!dt || amt <= 0) { alert('Enter date and amount'); return; }
+  if (!dt) { alert('Enter a payment date'); return; }
   // Mark ALL unpaid days as paid
   days.forEach(function(dy) {
     if (dy.st === 'unpaid') { dy.st = 'paid'; dy.pd = dt; }
   });
-  pmts.push({id: 'p' + (pmts.length + 1), dt: dt, amt: amt});
+  if (amt > 0) pmts.push({id: 'p' + (pmts.length + 1), dt: dt, amt: amt});
   payingWeek = false; render();
 }
 
