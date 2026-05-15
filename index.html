@@ -683,7 +683,15 @@ function renderHist(el) {
     return null;
   }
 
+  // Count how many weeks each payment covers
+  var pmtWeekCount = {};
   var keys = Object.keys(groups).sort().reverse();
+  keys.forEach(function(k) {
+    var pmt = weekPayment(groups[k]);
+    if (pmt) pmtWeekCount[pmt.dt] = (pmtWeekCount[pmt.dt] || 0) + 1;
+  });
+
+  var shownPayments = {};
   h += '<div class="space-y-2">';
   keys.forEach(function(k) {
     var wk = groups[k];
@@ -704,14 +712,10 @@ function renderHist(el) {
       h += '<span class="chip bg-amber-100 text-amber-700">Unpaid</span>';
     }
     h += '</div>';
-    // Right side: payment amount or week total
+    // Right side: always show week total
     h += '<div class="text-right">';
-    if (pmt) {
-      h += '<span class="font-bold text-sm text-indigo-600">' + fmt$(pmt.amt) + '</span>';
-      h += '<span class="text-xs text-gray-400 ml-2">paid ' + fmtShort(pmt.dt) + '</span>';
-    } else {
-      h += '<span class="font-medium text-sm text-indigo-600">' + fmt$(tot) + '</span>';
-    }
+    h += '<span class="font-medium text-sm text-indigo-600">' + fmt$(tot) + '</span>';
+    if (allPaid && pmt) h += '<span class="text-xs text-gray-400 ml-2">paid ' + fmtShort(pmt.dt) + '</span>';
     h += '</div></div>';
 
     // Expandable detail
@@ -723,10 +727,13 @@ function renderHist(el) {
       if (d.s && d.e) h += '<span class="text-xs text-gray-400">' + fmtTime(d.s) + '\u2013' + fmtTime(d.e) + '</span>';
       h += '</div><span class="font-medium text-indigo-600">' + fmt$(dayTotal(d)) + '</span></div>';
     });
-    // If payment exists, show summary row at bottom with delete option
-    if (pmt) {
+    // Show payment row only ONCE per payment (on the first/most recent week)
+    if (pmt && !shownPayments[pmt.dt]) {
+      shownPayments[pmt.dt] = true;
+      var wkCount = pmtWeekCount[pmt.dt] || 1;
+      var wkLabel = wkCount > 1 ? ' (' + wkCount + ' weeks)' : '';
       h += '<div class="px-4 py-2 bg-green-50 flex justify-between items-center text-sm">';
-      h += '<span class="text-green-700 font-medium">Payment on ' + fmtShort(pmt.dt) + '</span>';
+      h += '<span class="text-green-700 font-medium">Payment on ' + fmtShort(pmt.dt) + wkLabel + '</span>';
       h += '<div class="flex items-center gap-2">';
       h += '<span class="font-bold text-green-700">' + fmt$(pmt.amt) + '</span>';
       h += '<button onclick="event.stopPropagation();deletePayment(\'' + pmt.dt + '\')" class="text-xs text-red-400 hover:text-red-600">delete</button>';
