@@ -396,13 +396,21 @@ function ensure(date, dow) {
 }
 function unpaidTotal() { var t = 0; days.forEach(function(d) { if (d.st === 'unpaid') t += dayTotal(d); }); return t; }
 function paidTotal() { var t = 0; pmts.forEach(function(p) { t += p.amt; }); return t; }
-function allDaysTotal() { var t = 0; days.forEach(function(d) { if (d.st === 'paid' || d.st === 'unpaid') t += dayTotal(d); }); return t; }
-// Balance = what's owed minus what's been paid. Negative = credit (overpaid).
-// Small overpayments (<$100) are ignored (show $0). $100+ carries as credit.
+// Calculate credit per payment: overpayment >= $100 carries as credit
+function getCredits() {
+  var totalCredit = 0;
+  pmts.forEach(function(p) {
+    // Sum days covered by this payment
+    var covered = 0;
+    days.forEach(function(d) { if (d.pd === p.dt) covered += dayTotal(d); });
+    var over = p.amt - covered;
+    if (over >= 100) totalCredit += Math.floor(over / 100) * 100;
+  });
+  return totalCredit;
+}
+// Balance = unpaid total minus any credits from overpayments
 function getBalance() {
-  var bal = allDaysTotal() - paidTotal();
-  if (bal < 0 && bal > -100) return 0; // ignore small overpayments
-  return bal;
+  return unpaidTotal() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
 
