@@ -510,6 +510,11 @@ function renderWeek(el) {
     if (edy) h += renderEditPanel(edy);
   }
 
+  // Week total
+  h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block mb-4">';
+  h += '<span class="text-sm text-gray-500">Week Total: </span>';
+  h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span></div>';
+
   // Make a Payment (all unpaid days, accounting for credit)
   var allUnpaid = unpaidDays();
   var bal = getBalance();
@@ -543,10 +548,6 @@ function renderWeek(el) {
     h += '</div>';
   }
 
-  // Week total
-  h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block">';
-  h += '<span class="text-sm text-gray-500">Week Total: </span>';
-  h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span></div>';
 
   el.innerHTML = h;
 }
