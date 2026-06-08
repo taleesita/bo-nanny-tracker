@@ -188,6 +188,8 @@ function loadFromFirestore() {
 
 // ====== CONFIG ======
 var RATE = 30, TOLL = 12;
+var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50, deducted weekly
+var PARKING_START = '2026-06-06'; // Sat start of first week with parking deduction
 var DHRS = {Mon:8, Tue:8, Wed:8, Thu:8, Fri:5, Sat:8, Sun:8};
 var DTIMES = {Mon:['09:00','17:00'], Tue:['09:00','17:00'], Wed:['09:00','17:00'], Thu:['09:00','17:00'], Fri:['09:00','14:00']};
 var CATS = {
@@ -403,8 +405,18 @@ function getCredits() {
   var sorted = pmts.slice().sort(function(a, b) { return a.dt.localeCompare(b.dt); });
   sorted.forEach(function(p) {
     var covered = 0;
-    days.forEach(function(d) { if (d.pd === p.dt) covered += dayTotal(d); });
-    var diff = p.amt - covered;
+    var pWeeks = {}; // track distinct weeks in this payment for parking
+    days.forEach(function(d) {
+      if (d.pd === p.dt) {
+        covered += dayTotal(d);
+        var sat = ds(getMon(new Date(d.d + 'T12:00:00')));
+        if (weekHasParking(sat)) pWeeks[sat] = true;
+      }
+    });
+    // Subtract parking deductions from what was "owed"
+    var parkingDed = Object.keys(pWeeks).length * PARKING_WEEKLY;
+    var owed = covered - parkingDed;
+    var diff = p.amt - owed;
     if (diff >= 100) {
       credit += Math.floor(diff / 100) * 100;
     } else if (diff < 0) {
@@ -413,9 +425,27 @@ function getCredits() {
   });
   return credit;
 }
-// Balance = unpaid total minus any credits from overpayments
+// Count distinct unpaid weeks eligible for parking deduction
+function unpaidParkingWeeks() {
+  var weeks = {};
+  days.forEach(function(d) {
+    if (d.st === 'unpaid') {
+      var sat = ds(getMon(new Date(d.d + 'T12:00:00')));
+      if (sat >= PARKING_START) weeks[sat] = true;
+    }
+  });
+  return Object.keys(weeks).length;
+}
+function totalParkingDeduction() {
+  return unpaidParkingWeeks() * PARKING_WEEKLY;
+}
+// Check if a specific week (by its Saturday key) has parking
+function weekHasParking(satKey) {
+  return satKey >= PARKING_START;
+}
+// Balance = unpaid total minus parking deductions minus credits
 function getBalance() {
-  return unpaidTotal() - getCredits();
+  return unpaidTotal() - totalParkingDeduction() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
 
@@ -515,24 +545,44 @@ function renderWeek(el) {
     if (edy) h += renderEditPanel(edy);
   }
 
-  // Week total
+  // Week total with parking deduction
+  var curSat = ds(curWeek);
+  var hasParking = weekHasParking(curSat);
+  var weekNet = hasParking ? wt - PARKING_WEEKLY : wt;
   h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block mb-4">';
-  h += '<span class="text-sm text-gray-500">Week Total: </span>';
-  h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span></div>';
+  if (hasParking && wt > 0) {
+    h += '<div><span class="text-sm text-gray-500">Week Total: </span>';
+    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span></div>';
+    h += '<div class="mt-1"><span class="text-sm text-gray-500">Parking: </span>';
+    h += '<span class="text-sm font-medium text-red-500">-' + fmt$(PARKING_WEEKLY) + '</span></div>';
+    h += '<div class="mt-1 pt-1 border-t border-gray-200"><span class="text-sm text-gray-500">Net Total: </span>';
+    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(weekNet) + '</span></div>';
+  } else {
+    h += '<span class="text-sm text-gray-500">Week Total: </span>';
+    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
+  }
+  h += '</div>';
 
-  // Make a Payment (all unpaid days, accounting for credit)
+  // Make a Payment (all unpaid days, accounting for parking + credit)
   var allUnpaid = unpaidDays();
   var bal = getBalance();
   var credit = getCredits();
   var rawTotal = unpaidTotal();
+  var parkingDed = totalParkingDeduction();
+  var hasDeductions = (credit > 0 || parkingDed > 0);
   if (allUnpaid.length > 0) {
     h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
     h += '<div class="flex items-center justify-between flex-wrap gap-2">';
     h += '<div>';
-    if (credit > 0) {
-      // Show the math: total - credit = balance
+    if (hasDeductions) {
+      // Show the math: total - parking - credit = balance
       h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) ' + fmt$(rawTotal) + '</span>';
-      h += '<div class="mt-1"><span class="text-sm text-green-600">Credit from overpayment: -' + fmt$(credit) + '</span></div>';
+      if (parkingDed > 0) {
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Parking deduction: -' + fmt$(parkingDed) + '</span></div>';
+      }
+      if (credit > 0) {
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Credit from overpayment: -' + fmt$(credit) + '</span></div>';
+      }
       h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">Pay ' + fmt$(bal) + '</span></div>';
     } else {
       h += '<span class="font-medium text-green-800">' + allUnpaid.length + ' unpaid day(s)</span>';
@@ -754,7 +804,9 @@ function renderHist(el) {
   blocks.forEach(function(block) {
     var totalDayCount = 0;
     var blockTotal = 0;
-    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; });
+    var blockParking = 0;
+    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; if (weekHasParking(w.key)) blockParking += PARKING_WEEKLY; });
+    var blockNet = blockTotal - blockParking;
     var allPaid = block.weeks.every(function(w) { return w.allPaid; });
     var multiWeek = block.weeks.length > 1;
     var blockId = block.weeks[0].key;
@@ -774,13 +826,13 @@ function renderHist(el) {
       h += '<span class="chip bg-amber-100 text-amber-700">Unpaid</span>';
     }
     h += '</div>';
-    // Right side: payment amount (what was handed over) or block total
+    // Right side: payment amount (what was handed over) or block net total
     h += '<div class="text-right">';
     if (block.pmtDt) {
       h += '<span class="font-bold text-sm text-indigo-600">' + fmt$(block.pmtAmt) + '</span>';
       h += '<span class="text-xs text-gray-400 ml-2">paid ' + fmtShort(block.pmtDt) + '</span>';
     } else {
-      h += '<span class="font-medium text-sm text-indigo-600">' + fmt$(blockTotal) + '</span>';
+      h += '<span class="font-medium text-sm text-indigo-600">' + fmt$(blockParking > 0 ? blockNet : blockTotal) + '</span>';
     }
     h += '</div></div>';
 
@@ -805,9 +857,21 @@ function renderHist(el) {
     });
     // Subtotal + Payment footer
     if (block.pmtDt) {
-      h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-100">';
-      h += '<span class="text-indigo-600 font-medium">Total Due</span>';
-      h += '<span class="font-bold text-indigo-600">' + fmt$(blockTotal) + '</span></div>';
+      if (blockParking > 0) {
+        h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-100">';
+        h += '<span class="text-indigo-600">Subtotal</span>';
+        h += '<span class="font-medium text-indigo-600">' + fmt$(blockTotal) + '</span></div>';
+        h += '<div class="px-4 py-1 flex justify-between items-center text-sm bg-indigo-50">';
+        h += '<span class="text-indigo-500">Parking</span>';
+        h += '<span class="text-red-500">-' + fmt$(blockParking) + '</span></div>';
+        h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-200">';
+        h += '<span class="text-indigo-600 font-medium">Total Due</span>';
+        h += '<span class="font-bold text-indigo-600">' + fmt$(blockNet) + '</span></div>';
+      } else {
+        h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-100">';
+        h += '<span class="text-indigo-600 font-medium">Total Due</span>';
+        h += '<span class="font-bold text-indigo-600">' + fmt$(blockTotal) + '</span></div>';
+      }
       h += '<div class="px-4 py-2 bg-green-50 flex justify-between items-center text-sm">';
       h += '<span class="text-green-700 font-medium">Paid on ' + fmtShort(block.pmtDt) + '</span>';
       h += '<div class="flex items-center gap-2">';
