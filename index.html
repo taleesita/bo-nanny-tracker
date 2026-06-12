@@ -40,6 +40,17 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 0 }
 </header>
 
 <div id="appContent" style="display:none">
+
+<!-- Top-level mode tabs -->
+<div class="bg-indigo-700">
+  <div class="max-w-5xl mx-auto px-4 flex gap-1">
+    <button class="mode-tab px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-t-lg mt-1" onclick="switchMode('nanny')" id="modeNanny">Nanny</button>
+    <button class="mode-tab px-4 py-2 text-sm font-medium text-indigo-300 hover:text-white rounded-t-lg mt-1" onclick="switchMode('babysitter')" id="modeBabysitter">Babysitters</button>
+  </div>
+</div>
+
+<!-- NANNY MODE -->
+<div id="nannyContent">
 <div id="settingsPanel" class="hidden bg-white border-b shadow-sm">
   <div class="max-w-5xl mx-auto px-4 py-4">
     <h3 class="font-bold text-gray-800 mb-3">Manage Day Types</h3>
@@ -74,6 +85,20 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 0 }
 </div>
 
 <main class="max-w-5xl mx-auto px-4 py-6" id="main"></main>
+</div><!-- end nannyContent -->
+
+<!-- BABYSITTER MODE -->
+<div id="babysitterContent" style="display:none">
+<div class="bg-gradient-to-r from-pink-500 to-rose-600 text-white">
+  <div class="max-w-5xl mx-auto px-4 py-4 grid grid-cols-3 gap-4 text-center">
+    <div><div class="text-xs opacity-80">Sitters</div><div class="text-lg font-bold" id="bsSitterCount">0</div></div>
+    <div><div class="text-xs opacity-80">Total Sessions</div><div class="text-lg font-bold" id="bsSessionCount">0</div></div>
+    <div><div class="text-xs opacity-80">Unpaid</div><div class="text-lg font-bold" id="bsUnpaid">$0</div></div>
+  </div>
+</div>
+<main class="max-w-5xl mx-auto px-4 py-6" id="bsMain"></main>
+</div><!-- end babysitterContent -->
+
 </div><!-- end appContent -->
 <div id="loginScreen" style="display:none" class="flex flex-col items-center justify-center py-20 px-4">
   <h1 class="text-2xl font-bold text-indigo-600 mb-2">Nanny Payment Tracker</h1>
@@ -304,11 +329,20 @@ var pmts = [
 ];
 
 // ====== STATE ======
+var curMode = 'nanny'; // 'nanny' or 'babysitter'
 var curView = 'week';
 var curWeek = getMon(new Date());
 var editingDate = null;
 var showWeekend = false;
 var payingWeek = false;
+
+// ====== BABYSITTER DATA ======
+var bsSitters = []; // [{id, name, rate}]
+var bsSessions = []; // [{id, sitterId, date, start, end, hours, addons:[{label,amt}], total, status:'unpaid'|'paid', paidDate, paidAmt}]
+var bsEditingSitter = null; // sitter id being edited, or 'new'
+var bsEditingSession = null; // session id being edited, or 'new'
+var bsSelectedSitter = null; // currently selected sitter for viewing
+var bsPayingSession = null; // session id being paid
 
 // ====== HELPERS ======
 // Payment weeks run Sat-Fri: weekend work belongs to the NEXT Mon-Fri week
@@ -409,8 +443,12 @@ function getCredits() {
     days.forEach(function(d) {
       if (d.pd === p.dt) {
         covered += dayTotal(d);
-        var sat = ds(getMon(new Date(d.d + 'T12:00:00')));
-        if (weekHasParking(sat)) pWeeks[sat] = true;
+        var dateStr = d.d.substring(0, 10); // strip -bonus suffix
+        var dt = new Date(dateStr + 'T12:00:00');
+        if (!isNaN(dt.getTime())) {
+          var sat = ds(getMon(dt));
+          if (weekHasParking(sat)) pWeeks[sat] = true;
+        }
       }
     });
     // Subtract parking deductions from what was "owed"
@@ -430,8 +468,12 @@ function unpaidParkingWeeks() {
   var weeks = {};
   days.forEach(function(d) {
     if (d.st === 'unpaid') {
-      var sat = ds(getMon(new Date(d.d + 'T12:00:00')));
-      if (sat >= PARKING_START) weeks[sat] = true;
+      var dateStr = d.d.substring(0, 10); // strip -bonus suffix
+      var dt = new Date(dateStr + 'T12:00:00');
+      if (!isNaN(dt.getTime())) {
+        var sat = ds(getMon(dt));
+        if (sat >= PARKING_START) weeks[sat] = true;
+      }
     }
   });
   return Object.keys(weeks).length;
