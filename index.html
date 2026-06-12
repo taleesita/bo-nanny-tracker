@@ -205,6 +205,8 @@ function loadFromFirestore() {
       try { CATS = JSON.parse(docs[2].data().items); } catch(e) {}
     }
     render();
+    // Also load babysitter data
+    loadBsFromFirestore();
   }).catch(function(err) {
     console.log('Firestore load error (using local data):', err);
     render();
@@ -1085,6 +1087,366 @@ function removeCategory(key) {
 
 // ====== INIT ======
 // render() is called by auth.onAuthStateChanged after login
+
+// ====== MODE SWITCHING ======
+function switchMode(mode) {
+  curMode = mode;
+  document.getElementById('nannyContent').style.display = mode === 'nanny' ? '' : 'none';
+  document.getElementById('babysitterContent').style.display = mode === 'babysitter' ? '' : 'none';
+  document.getElementById('modeNanny').className = 'mode-tab px-4 py-2 text-sm font-medium rounded-t-lg mt-1 ' +
+    (mode === 'nanny' ? 'text-white bg-indigo-600' : 'text-indigo-300 hover:text-white');
+  document.getElementById('modeBabysitter').className = 'mode-tab px-4 py-2 text-sm font-medium rounded-t-lg mt-1 ' +
+    (mode === 'babysitter' ? 'text-white bg-pink-600' : 'text-indigo-300 hover:text-white');
+  if (mode === 'babysitter') renderBabysitter();
+  else render();
+}
+
+// ====== BABYSITTER FIRESTORE ======
+function saveBsToFirestore() {
+  if (!currentUser) return;
+  db.collection('data').doc('bsSitters').set({ items: JSON.stringify(bsSitters) });
+  db.collection('data').doc('bsSessions').set({ items: JSON.stringify(bsSessions) });
+}
+function loadBsFromFirestore() {
+  if (!currentUser) return;
+  return Promise.all([
+    db.collection('data').doc('bsSitters').get(),
+    db.collection('data').doc('bsSessions').get()
+  ]).then(function(docs) {
+    if (docs[0].exists) { try { bsSitters = JSON.parse(docs[0].data().items); } catch(e) {} }
+    if (docs[1].exists) { try { bsSessions = JSON.parse(docs[1].data().items); } catch(e) {} }
+  }).catch(function(err) { console.log('BS Firestore load error:', err); });
+}
+
+// ====== BABYSITTER HELPERS ======
+function bsGenId() { return 'bs' + Date.now() + Math.floor(Math.random() * 1000); }
+function bsFindSitter(id) { for (var i = 0; i < bsSitters.length; i++) { if (bsSitters[i].id === id) return bsSitters[i]; } return null; }
+function bsFindSession(id) { for (var i = 0; i < bsSessions.length; i++) { if (bsSessions[i].id === id) return bsSessions[i]; } return null; }
+function bsCalcHours(start, end) {
+  if (!start || !end) return 0;
+  var s = start.split(':'), e = end.split(':');
+  var mins = (parseInt(e[0]) * 60 + parseInt(e[1])) - (parseInt(s[0]) * 60 + parseInt(s[1]));
+  return Math.max(0, Math.round(mins / 60 * 100) / 100);
+}
+function bsSessionTotal(sess) {
+  var sitter = bsFindSitter(sess.sitterId);
+  var rate = sitter ? sitter.rate : 0;
+  var base = (sess.hours || 0) * rate;
+  var addons = 0;
+  if (sess.addons) sess.addons.forEach(function(a) { addons += (a.amt || 0); });
+  return base + addons;
+}
+function bsUnpaidTotal() {
+  var t = 0;
+  bsSessions.forEach(function(s) { if (s.status !== 'paid') t += bsSessionTotal(s); });
+  return t;
+}
+
+// ====== BABYSITTER RENDER ======
+function renderBabysitter() {
+  saveBsToFirestore();
+  document.getElementById('bsSitterCount').textContent = bsSitters.length;
+  document.getElementById('bsSessionCount').textContent = bsSessions.length;
+  document.getElementById('bsUnpaid').textContent = fmt$(bsUnpaidTotal());
+  var el = document.getElementById('bsMain');
+  var h = '';
+
+  // Sitter cards + add button
+  h += '<div class="flex items-center justify-between mb-3">';
+  h += '<h2 class="text-lg font-bold text-gray-800">Babysitters</h2>';
+  h += '<button onclick="bsStartAddSitter()" class="px-3 py-1.5 bg-pink-600 text-white text-sm rounded-lg hover:bg-pink-700">+ Add Sitter</button>';
+  h += '</div>';
+
+  if (bsSitters.length === 0 && bsEditingSitter !== 'new') {
+    h += '<div class="bg-gray-50 rounded-lg p-6 text-center text-gray-400 mb-4">No babysitters yet. Add one to get started.</div>';
+  }
+
+  // Sitter pills
+  if (bsSitters.length > 0) {
+    h += '<div class="flex flex-wrap gap-2 mb-4">';
+    bsSitters.forEach(function(s) {
+      var sel = bsSelectedSitter === s.id;
+      h += '<button onclick="bsSelectSitter(\'' + s.id + '\')" class="px-4 py-2 rounded-full text-sm font-medium transition-colors ' +
+        (sel ? 'bg-pink-600 text-white shadow-md' : 'bg-white text-gray-700 border hover:border-pink-300 hover:text-pink-600') + '">';
+      h += s.name + ' <span class="opacity-60">' + fmt$(s.rate) + '/hr</span>';
+      h += '</button>';
+    });
+    h += '</div>';
+  }
+
+  // Add/Edit sitter form
+  if (bsEditingSitter) {
+    var isNew = bsEditingSitter === 'new';
+    var es = isNew ? {name: '', rate: ''} : bsFindSitter(bsEditingSitter);
+    h += '<div class="bg-pink-50 rounded-lg p-4 mb-4 border border-pink-200">';
+    h += '<h3 class="font-medium text-pink-800 mb-3">' + (isNew ? 'Add Babysitter' : 'Edit Babysitter') + '</h3>';
+    h += '<div class="flex flex-wrap gap-3 items-end">';
+    h += '<div><label class="text-xs text-pink-700 block">Name</label><input id="bs-name" value="' + (es.name || '') + '" class="px-3 py-1.5 border rounded text-sm w-40" placeholder="e.g. Sarah"></div>';
+    h += '<div><label class="text-xs text-pink-700 block">Hourly Rate ($)</label><input id="bs-rate" type="number" step="0.01" value="' + (es.rate || '') + '" class="px-3 py-1.5 border rounded text-sm w-24" placeholder="25"></div>';
+    h += '<button onclick="bsSaveSitter()" class="px-4 py-1.5 bg-pink-600 text-white rounded text-sm hover:bg-pink-700">Save</button>';
+    h += '<button onclick="bsCancelSitter()" class="px-4 py-1.5 bg-gray-300 text-gray-700 rounded text-sm">Cancel</button>';
+    if (!isNew) h += '<button onclick="bsDeleteSitter(\'' + es.id + '\')" class="px-4 py-1.5 bg-red-100 text-red-600 rounded text-sm hover:bg-red-200">Delete</button>';
+    h += '</div></div>';
+  }
+
+  // Selected sitter sessions
+  if (bsSelectedSitter) {
+    var sitter = bsFindSitter(bsSelectedSitter);
+    if (sitter) {
+      h += '<div class="border-t pt-4 mt-2">';
+      h += '<div class="flex items-center justify-between mb-3">';
+      h += '<div class="flex items-center gap-3">';
+      h += '<h3 class="text-md font-bold text-gray-800">' + sitter.name + '\'s Sessions</h3>';
+      h += '<button onclick="bsEditingSitter=\'' + sitter.id + '\';renderBabysitter()" class="text-xs text-gray-400 hover:text-pink-600">edit profile</button>';
+      h += '</div>';
+      h += '<button onclick="bsStartAddSession()" class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">+ Log Session</button>';
+      h += '</div>';
+
+      // Add/Edit session form
+      if (bsEditingSession) {
+        var isNewSess = bsEditingSession === 'new';
+        var sess = isNewSess ? {date: ds(new Date()), start: '', end: '', hours: 0, addons: [], status: 'unpaid'} : bsFindSession(bsEditingSession);
+        h += renderBsSessionForm(sess, isNewSess);
+      }
+
+      // Session list
+      var sitterSessions = bsSessions.filter(function(s) { return s.sitterId === bsSelectedSitter; });
+      sitterSessions.sort(function(a, b) { return b.date.localeCompare(a.date); });
+      if (sitterSessions.length === 0 && !bsEditingSession) {
+        h += '<div class="bg-gray-50 rounded-lg p-4 text-center text-gray-400">No sessions logged yet.</div>';
+      } else {
+        h += '<div class="space-y-2">';
+        sitterSessions.forEach(function(sess) {
+          if (bsEditingSession === sess.id) return; // skip if editing inline
+          var tot = bsSessionTotal(sess);
+          var isPaid = sess.status === 'paid';
+          h += '<div class="bg-white rounded-lg shadow-sm border overflow-hidden">';
+          h += '<div class="px-4 py-3 flex justify-between items-center cursor-pointer hover:bg-pink-50" onclick="bsToggleDetail(\'' + sess.id + '\')">';
+          h += '<div class="flex items-center gap-2 flex-wrap">';
+          h += '<span class="font-medium text-sm text-gray-800">' + fmtShort(sess.date) + '</span>';
+          if (sess.start && sess.end) h += '<span class="text-xs text-gray-400">' + fmtTime(sess.start) + '–' + fmtTime(sess.end) + '</span>';
+          h += '<span class="text-xs text-gray-400">' + sess.hours + 'h</span>';
+          if (isPaid) h += '<span class="chip bg-green-100 text-green-700">Paid</span>';
+          else h += '<span class="chip bg-amber-100 text-amber-700">Unpaid</span>';
+          h += '</div>';
+          h += '<span class="font-bold text-sm ' + (isPaid ? 'text-green-600' : 'text-pink-600') + '">' + fmt$(tot) + '</span>';
+          h += '</div>';
+          // Expandable detail
+          h += '<div id="bsd-' + sess.id + '" class="hidden border-t px-4 py-2 bg-gray-50 text-sm">';
+          var sitterForSess = bsFindSitter(sess.sitterId);
+          h += '<div class="text-gray-600">' + sess.hours + 'h × ' + fmt$((sitterForSess ? sitterForSess.rate : 0)) + '/hr = ' + fmt$(sess.hours * (sitterForSess ? sitterForSess.rate : 0)) + '</div>';
+          if (sess.addons && sess.addons.length > 0) {
+            sess.addons.forEach(function(a) {
+              h += '<div class="text-gray-500">' + a.label + ': ' + fmt$(a.amt) + '</div>';
+            });
+          }
+          if (isPaid) {
+            h += '<div class="text-green-600 mt-1">Paid ' + fmt$(sess.paidAmt) + ' on ' + fmtShort(sess.paidDate) + '</div>';
+          }
+          h += '<div class="flex gap-2 mt-2">';
+          if (!isPaid) {
+            h += '<button onclick="event.stopPropagation();bsStartPaySession(\'' + sess.id + '\')" class="text-xs text-green-600 hover:text-green-800">pay</button>';
+            h += '<button onclick="event.stopPropagation();bsEditingSession=\'' + sess.id + '\';renderBabysitter()" class="text-xs text-blue-500 hover:text-blue-700">edit</button>';
+          }
+          h += '<button onclick="event.stopPropagation();bsDeleteSession(\'' + sess.id + '\')" class="text-xs text-red-400 hover:text-red-600">delete</button>';
+          h += '</div>';
+          // Pay inline form
+          if (bsPayingSession === sess.id) {
+            h += '<div class="mt-2 pt-2 border-t flex flex-wrap gap-2 items-end">';
+            h += '<div><label class="text-xs text-green-700 block">Date</label><input type="date" id="bsp-date" value="' + ds(new Date()) + '" class="px-2 py-1 border rounded text-sm"></div>';
+            h += '<div><label class="text-xs text-green-700 block">Amount</label><input type="number" id="bsp-amt" step="0.01" value="' + tot.toFixed(2) + '" class="px-2 py-1 border rounded text-sm w-24"></div>';
+            h += '<button onclick="event.stopPropagation();bsConfirmPay(\'' + sess.id + '\')" class="px-3 py-1 bg-green-600 text-white rounded text-xs">Confirm</button>';
+            h += '<button onclick="event.stopPropagation();bsPayingSession=null;renderBabysitter()" class="px-3 py-1 bg-gray-300 text-gray-700 rounded text-xs">Cancel</button>';
+            h += '</div>';
+          }
+          h += '</div></div>';
+        });
+        h += '</div>';
+      }
+      h += '</div>';
+    }
+  }
+
+  el.innerHTML = h;
+}
+
+function renderBsSessionForm(sess, isNew) {
+  var sitter = bsFindSitter(bsSelectedSitter);
+  var h = '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
+  h += '<h3 class="font-medium text-green-800 mb-3">' + (isNew ? 'Log Session' : 'Edit Session') + '</h3>';
+  h += '<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">';
+  h += '<div><label class="text-xs text-green-700 block">Date</label><input id="bss-date" type="date" value="' + (sess.date || ds(new Date())) + '" class="px-2 py-1.5 border rounded text-sm w-full"></div>';
+  h += '<div><label class="text-xs text-green-700 block">Start</label><input id="bss-start" type="time" value="' + (sess.start || '') + '" onchange="bsCalcForm()" class="px-2 py-1.5 border rounded text-sm w-full"></div>';
+  h += '<div><label class="text-xs text-green-700 block">End</label><input id="bss-end" type="time" value="' + (sess.end || '') + '" onchange="bsCalcForm()" class="px-2 py-1.5 border rounded text-sm w-full"></div>';
+  h += '<div><label class="text-xs text-green-700 block">Hours</label><input id="bss-hours" type="number" step="0.25" value="' + (sess.hours || 0) + '" class="px-2 py-1.5 border rounded text-sm w-full"></div>';
+  h += '</div>';
+  // Add-ons
+  h += '<div class="mb-3"><label class="text-xs text-green-700 block mb-1">Add-ons</label>';
+  h += '<div id="bss-addons" class="space-y-2">';
+  if (sess.addons && sess.addons.length > 0) {
+    sess.addons.forEach(function(a, i) {
+      h += '<div class="flex gap-2 items-center">';
+      h += '<input class="bss-addon-label px-2 py-1 border rounded text-sm w-32" value="' + (a.label || '') + '" placeholder="e.g. Dinner">';
+      h += '<input class="bss-addon-amt px-2 py-1 border rounded text-sm w-20" type="number" step="0.01" value="' + (a.amt || 0) + '" placeholder="$">';
+      h += '<button onclick="bsRemoveAddon(' + i + ')" class="text-red-400 hover:text-red-600 text-xs">remove</button>';
+      h += '</div>';
+    });
+  }
+  h += '</div>';
+  h += '<button onclick="bsAddAddon()" class="mt-2 text-xs text-green-600 hover:text-green-800">+ Add item</button>';
+  h += '</div>';
+  // Preview
+  var hrs = sess.hours || 0;
+  var rate = sitter ? sitter.rate : 0;
+  var addonsTotal = 0;
+  if (sess.addons) sess.addons.forEach(function(a) { addonsTotal += (a.amt || 0); });
+  h += '<div class="text-sm text-green-700 mb-3" id="bss-preview">' + hrs + 'h × ' + fmt$(rate) + ' + ' + fmt$(addonsTotal) + ' add-ons = <strong>' + fmt$(hrs * rate + addonsTotal) + '</strong></div>';
+  h += '<div class="flex gap-2">';
+  h += '<button onclick="bsSaveSession()" class="px-4 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700">Save</button>';
+  h += '<button onclick="bsCancelSession()" class="px-4 py-1.5 bg-gray-300 text-gray-700 rounded text-sm">Cancel</button>';
+  h += '</div></div>';
+  return h;
+}
+
+// ====== BABYSITTER ACTIONS ======
+function bsStartAddSitter() { bsEditingSitter = 'new'; renderBabysitter(); }
+function bsCancelSitter() { bsEditingSitter = null; renderBabysitter(); }
+function bsSaveSitter() {
+  var name = document.getElementById('bs-name').value.trim();
+  var rate = parseFloat(document.getElementById('bs-rate').value) || 0;
+  if (!name) { alert('Enter a name'); return; }
+  if (rate <= 0) { alert('Enter a valid rate'); return; }
+  if (bsEditingSitter === 'new') {
+    var s = {id: bsGenId(), name: name, rate: rate};
+    bsSitters.push(s);
+    bsSelectedSitter = s.id;
+  } else {
+    var s = bsFindSitter(bsEditingSitter);
+    if (s) { s.name = name; s.rate = rate; }
+  }
+  bsEditingSitter = null;
+  renderBabysitter();
+}
+function bsDeleteSitter(id) {
+  if (!confirm('Delete this babysitter and all their sessions?')) return;
+  bsSitters = bsSitters.filter(function(s) { return s.id !== id; });
+  bsSessions = bsSessions.filter(function(s) { return s.sitterId !== id; });
+  if (bsSelectedSitter === id) bsSelectedSitter = bsSitters.length > 0 ? bsSitters[0].id : null;
+  bsEditingSitter = null;
+  renderBabysitter();
+}
+function bsSelectSitter(id) {
+  bsSelectedSitter = id;
+  bsEditingSitter = null;
+  bsEditingSession = null;
+  bsPayingSession = null;
+  renderBabysitter();
+}
+
+// Sessions
+function bsStartAddSession() { bsEditingSession = 'new'; renderBabysitter(); }
+function bsCancelSession() { bsEditingSession = null; renderBabysitter(); }
+function bsCalcForm() {
+  var s = document.getElementById('bss-start').value;
+  var e = document.getElementById('bss-end').value;
+  if (s && e) document.getElementById('bss-hours').value = bsCalcHours(s, e);
+}
+function bsCollectAddons() {
+  var labels = document.querySelectorAll('.bss-addon-label');
+  var amts = document.querySelectorAll('.bss-addon-amt');
+  var addons = [];
+  for (var i = 0; i < labels.length; i++) {
+    var lbl = labels[i].value.trim();
+    var amt = parseFloat(amts[i].value) || 0;
+    if (lbl || amt > 0) addons.push({label: lbl || 'Add-on', amt: amt});
+  }
+  return addons;
+}
+function bsAddAddon() {
+  // Save current addons, add a blank one, re-render form
+  var addons = bsCollectAddons();
+  addons.push({label: '', amt: 0});
+  // Temporarily store and re-render
+  var sess;
+  if (bsEditingSession === 'new') {
+    sess = {
+      date: document.getElementById('bss-date').value,
+      start: document.getElementById('bss-start').value,
+      end: document.getElementById('bss-end').value,
+      hours: parseFloat(document.getElementById('bss-hours').value) || 0,
+      addons: addons, status: 'unpaid'
+    };
+  } else {
+    sess = bsFindSession(bsEditingSession);
+    if (sess) {
+      sess.date = document.getElementById('bss-date').value;
+      sess.start = document.getElementById('bss-start').value;
+      sess.end = document.getElementById('bss-end').value;
+      sess.hours = parseFloat(document.getElementById('bss-hours').value) || 0;
+      sess.addons = addons;
+    }
+  }
+  renderBabysitter();
+}
+function bsRemoveAddon(idx) {
+  var addons = bsCollectAddons();
+  addons.splice(idx, 1);
+  if (bsEditingSession === 'new') {
+    renderBabysitter();
+    // We need to re-inject addons after render — use a simpler approach
+  } else {
+    var sess = bsFindSession(bsEditingSession);
+    if (sess) sess.addons = addons;
+  }
+  renderBabysitter();
+}
+function bsSaveSession() {
+  var date = document.getElementById('bss-date').value;
+  var start = document.getElementById('bss-start').value;
+  var end = document.getElementById('bss-end').value;
+  var hours = parseFloat(document.getElementById('bss-hours').value) || 0;
+  var addons = bsCollectAddons();
+  if (!date) { alert('Enter a date'); return; }
+  if (hours <= 0) { alert('Enter hours'); return; }
+  if (bsEditingSession === 'new') {
+    bsSessions.push({
+      id: bsGenId(), sitterId: bsSelectedSitter, date: date,
+      start: start, end: end, hours: hours, addons: addons,
+      status: 'unpaid', paidDate: null, paidAmt: 0
+    });
+  } else {
+    var sess = bsFindSession(bsEditingSession);
+    if (sess) {
+      sess.date = date; sess.start = start; sess.end = end;
+      sess.hours = hours; sess.addons = addons;
+    }
+  }
+  bsEditingSession = null;
+  renderBabysitter();
+}
+function bsDeleteSession(id) {
+  if (!confirm('Delete this session?')) return;
+  bsSessions = bsSessions.filter(function(s) { return s.id !== id; });
+  renderBabysitter();
+}
+function bsToggleDetail(id) {
+  var el = document.getElementById('bsd-' + id);
+  if (el) el.classList.toggle('hidden');
+}
+function bsStartPaySession(id) { bsPayingSession = id; renderBabysitter(); }
+function bsConfirmPay(id) {
+  var sess = bsFindSession(id);
+  if (!sess) return;
+  var date = document.getElementById('bsp-date').value;
+  var amt = parseFloat(document.getElementById('bsp-amt').value) || 0;
+  if (!date) { alert('Enter payment date'); return; }
+  sess.status = 'paid';
+  sess.paidDate = date;
+  sess.paidAmt = amt;
+  bsPayingSession = null;
+  renderBabysitter();
+}
+
 </script>
 <script>
 if ('serviceWorker' in navigator) {
