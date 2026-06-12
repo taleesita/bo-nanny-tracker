@@ -1190,82 +1190,85 @@ function renderBabysitter() {
     h += '</div></div>';
   }
 
-  // Selected sitter sessions
+  // Log session button (requires a sitter selected)
   if (bsSelectedSitter) {
-    var sitter = bsFindSitter(bsSelectedSitter);
-    if (sitter) {
-      h += '<div class="border-t pt-4 mt-2">';
-      h += '<div class="flex items-center justify-between mb-3">';
-      h += '<div class="flex items-center gap-3">';
-      h += '<h3 class="text-md font-bold text-gray-800">' + sitter.name + '\'s Sessions</h3>';
-      h += '<button onclick="bsEditingSitter=\'' + sitter.id + '\';renderBabysitter()" class="text-xs text-gray-400 hover:text-pink-600">edit profile</button>';
-      h += '</div>';
-      h += '<button onclick="bsStartAddSession()" class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">+ Log Session</button>';
-      h += '</div>';
+    h += '<div class="flex items-center justify-between mb-3 border-t pt-4 mt-2">';
+    h += '<div class="flex items-center gap-3">';
+    var selSitter = bsFindSitter(bsSelectedSitter);
+    h += '<span class="text-sm text-gray-500">Logging for <strong>' + (selSitter ? selSitter.name : '') + '</strong></span>';
+    h += '</div>';
+    h += '<button onclick="bsStartAddSession()" class="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">+ Log Session</button>';
+    h += '</div>';
+  } else if (bsSitters.length > 0) {
+    h += '<div class="bg-gray-50 rounded-lg p-3 text-center text-gray-400 text-sm mb-4 border-t pt-4 mt-2">Select a sitter above to log a new session</div>';
+  }
 
-      // Add/Edit session form
-      if (bsEditingSession) {
-        var isNewSess = bsEditingSession === 'new';
-        var sess = isNewSess ? (bsTempSession || {date: ds(new Date()), start: '', end: '', hours: 0, addons: [], status: 'unpaid'}) : bsFindSession(bsEditingSession);
-        h += renderBsSessionForm(sess, isNewSess);
+  // Add/Edit session form
+  if (bsEditingSession) {
+    var isNewSess = bsEditingSession === 'new';
+    var sess = isNewSess ? (bsTempSession || {date: ds(new Date()), start: '', end: '', hours: 0, addons: [], status: 'unpaid'}) : bsFindSession(bsEditingSession);
+    h += renderBsSessionForm(sess, isNewSess);
+  }
+
+  // All sessions history (all sitters, sorted by date)
+  var allSessions = bsSessions.slice().sort(function(a, b) { return b.date.localeCompare(a.date); });
+  if (allSessions.length > 0) {
+    h += '<div class="border-t pt-4 mt-2">';
+    h += '<h3 class="text-md font-bold text-gray-800 mb-3">Session History</h3>';
+    h += '<div class="space-y-2">';
+    allSessions.forEach(function(sess) {
+      if (bsEditingSession === sess.id) return;
+      var tot = bsSessionTotal(sess);
+      var isPaid = sess.status === 'paid';
+      var sitterForSess = bsFindSitter(sess.sitterId);
+      var sitterName = sitterForSess ? sitterForSess.name : '?';
+      var rate = sitterForSess ? sitterForSess.rate : 0;
+      var base = sess.hours * rate;
+      var addonsTotal = 0;
+      if (sess.addons) sess.addons.forEach(function(a) { addonsTotal += (a.amt || 0); });
+
+      h += '<div class="bg-white rounded-lg shadow-sm border overflow-hidden">';
+      // Main line: date, sitter, time, breakdown, status, amount, actions
+      h += '<div class="px-4 py-3 flex justify-between items-start gap-2">';
+      h += '<div class="flex-1 min-w-0">';
+      h += '<div class="flex items-center gap-2 flex-wrap">';
+      h += '<span class="font-medium text-sm text-gray-800">' + fmtShort(sess.date) + '</span>';
+      h += '<span class="chip bg-pink-100 text-pink-700">' + sitterName + '</span>';
+      if (sess.start && sess.end) h += '<span class="text-xs text-gray-400">' + fmtTime(sess.start) + '–' + fmtTime(sess.end) + '</span>';
+      if (isPaid) h += '<span class="chip bg-green-100 text-green-700">Paid</span>';
+      else h += '<span class="chip bg-amber-100 text-amber-700">Unpaid</span>';
+      h += '</div>';
+      // Cost breakdown inline
+      h += '<div class="text-xs text-gray-400 mt-1">';
+      h += sess.hours + 'h × ' + fmt$(rate) + '/hr = ' + fmt$(base);
+      if (addonsTotal > 0) {
+        var addonLabels = sess.addons.map(function(a) { return a.label + ' ' + fmt$(a.amt); }).join(', ');
+        h += ' + ' + addonLabels;
       }
-
-      // Session list
-      var sitterSessions = bsSessions.filter(function(s) { return s.sitterId === bsSelectedSitter; });
-      sitterSessions.sort(function(a, b) { return b.date.localeCompare(a.date); });
-      if (sitterSessions.length === 0 && !bsEditingSession) {
-        h += '<div class="bg-gray-50 rounded-lg p-4 text-center text-gray-400">No sessions logged yet.</div>';
-      } else {
-        h += '<div class="space-y-2">';
-        sitterSessions.forEach(function(sess) {
-          if (bsEditingSession === sess.id) return; // skip if editing inline
-          var tot = bsSessionTotal(sess);
-          var isPaid = sess.status === 'paid';
-          h += '<div class="bg-white rounded-lg shadow-sm border overflow-hidden">';
-          h += '<div class="px-4 py-3 flex justify-between items-center">';
-          h += '<div class="flex items-center gap-2 flex-wrap cursor-pointer" onclick="bsToggleDetail(\'' + sess.id + '\')">';
-          h += '<span class="font-medium text-sm text-gray-800">' + fmtShort(sess.date) + '</span>';
-          if (sess.start && sess.end) h += '<span class="text-xs text-gray-400">' + fmtTime(sess.start) + '–' + fmtTime(sess.end) + '</span>';
-          h += '<span class="text-xs text-gray-400">' + sess.hours + 'h</span>';
-          if (isPaid) h += '<span class="chip bg-green-100 text-green-700">Paid</span>';
-          else h += '<span class="chip bg-amber-100 text-amber-700">Unpaid</span>';
-          h += '</div>';
-          h += '<div class="flex items-center gap-3">';
-          h += '<span class="font-bold text-sm ' + (isPaid ? 'text-green-600' : 'text-pink-600') + '">' + fmt$(tot) + '</span>';
-          if (!isPaid) {
-            h += '<button onclick="bsStartPaySession(\'' + sess.id + '\')" class="text-xs text-green-600 hover:text-green-800 font-medium">pay</button>';
-            h += '<button onclick="bsEditingSession=\'' + sess.id + '\';renderBabysitter()" class="text-xs text-blue-500 hover:text-blue-700">edit</button>';
-          }
-          h += '<button onclick="bsDeleteSession(\'' + sess.id + '\')" class="text-xs text-red-400 hover:text-red-600">delete</button>';
-          h += '</div></div>';
-          // Expandable detail (cost breakdown + pay form)
-          h += '<div id="bsd-' + sess.id + '" class="hidden border-t px-4 py-2 bg-gray-50 text-sm">';
-          var sitterForSess = bsFindSitter(sess.sitterId);
-          h += '<div class="text-gray-600">' + sess.hours + 'h × ' + fmt$((sitterForSess ? sitterForSess.rate : 0)) + '/hr = ' + fmt$(sess.hours * (sitterForSess ? sitterForSess.rate : 0)) + '</div>';
-          if (sess.addons && sess.addons.length > 0) {
-            sess.addons.forEach(function(a) {
-              h += '<div class="text-gray-500">' + a.label + ': ' + fmt$(a.amt) + '</div>';
-            });
-          }
-          if (isPaid) {
-            h += '<div class="text-green-600 mt-1">Paid ' + fmt$(sess.paidAmt) + ' on ' + fmtShort(sess.paidDate) + '</div>';
-          }
-          h += '</div>';
-          // Pay inline form (outside expandable, always visible when active)
-          if (bsPayingSession === sess.id) {
-            h += '<div class="border-t px-4 py-2 bg-green-50 flex flex-wrap gap-2 items-end">';
-            h += '<div><label class="text-xs text-green-700 block">Date</label><input type="date" id="bsp-date" value="' + ds(new Date()) + '" class="px-2 py-1 border rounded text-sm"></div>';
-            h += '<div><label class="text-xs text-green-700 block">Amount</label><input type="number" id="bsp-amt" step="0.01" value="' + tot.toFixed(2) + '" class="px-2 py-1 border rounded text-sm w-24"></div>';
-            h += '<button onclick="bsConfirmPay(\'' + sess.id + '\')" class="px-3 py-1 bg-green-600 text-white rounded text-xs">Confirm</button>';
-            h += '<button onclick="bsPayingSession=null;renderBabysitter()" class="px-3 py-1 bg-gray-300 text-gray-700 rounded text-xs">Cancel</button>';
-            h += '</div>';
-          }
-          h += '</div>';
-        });
+      if (isPaid) h += ' · Paid ' + fmt$(sess.paidAmt) + ' on ' + fmtShort(sess.paidDate);
+      h += '</div>';
+      h += '</div>';
+      // Right side: total + actions
+      h += '<div class="flex items-center gap-2 flex-shrink-0">';
+      h += '<span class="font-bold text-sm ' + (isPaid ? 'text-green-600' : 'text-pink-600') + '">' + fmt$(tot) + '</span>';
+      if (!isPaid) {
+        h += '<button onclick="bsStartPaySession(\'' + sess.id + '\')" title="Pay" class="hover:opacity-70">💰</button>';
+        h += '<button onclick="bsEditingSession=\'' + sess.id + '\';bsSelectedSitter=\'' + sess.sitterId + '\';renderBabysitter()" title="Edit" class="hover:opacity-70">✏️</button>';
+      }
+      h += '<button onclick="bsDeleteSession(\'' + sess.id + '\')" title="Delete" class="hover:opacity-70">🗑️</button>';
+      h += '</div></div>';
+      // Pay inline form
+      if (bsPayingSession === sess.id) {
+        h += '<div class="border-t px-4 py-2 bg-green-50 flex flex-wrap gap-2 items-end">';
+        h += '<div><label class="text-xs text-green-700 block">Date</label><input type="date" id="bsp-date" value="' + ds(new Date()) + '" class="px-2 py-1 border rounded text-sm"></div>';
+        h += '<div><label class="text-xs text-green-700 block">Amount</label><input type="number" id="bsp-amt" step="0.01" value="' + tot.toFixed(2) + '" class="px-2 py-1 border rounded text-sm w-24"></div>';
+        h += '<button onclick="bsConfirmPay(\'' + sess.id + '\')" class="px-3 py-1 bg-green-600 text-white rounded text-xs">Confirm</button>';
+        h += '<button onclick="bsPayingSession=null;renderBabysitter()" class="px-3 py-1 bg-gray-300 text-gray-700 rounded text-xs">Cancel</button>';
         h += '</div>';
       }
       h += '</div>';
-    }
+    });
+    h += '</div></div>';
   }
 
   el.innerHTML = h;
