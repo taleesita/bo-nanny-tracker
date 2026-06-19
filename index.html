@@ -461,7 +461,7 @@ function getCredits() {
     if (diff >= 100) {
       credit += Math.floor(diff / 100) * 100;
     } else if (diff < 0) {
-      credit = Math.max(0, credit + diff); // underpayment uses credit
+      credit += diff; // underpayment consumes credit (can go negative = debt)
     }
   });
   return credit;
@@ -546,12 +546,13 @@ function renderWeek(el) {
   var h = '';
   // Nav
   h += '<div class="flex items-center justify-between mb-3 flex-wrap gap-2">';
-  h += '<button onclick="navWeek(-1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">&#9664; Prev</button>';
-  h += '<span class="font-semibold text-gray-700">' + fmtWeekRange(curWeek) + '</span>';
   h += '<div class="flex gap-2">';
-  h += '<button onclick="navWeek(1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">Next &#9654;</button>';
   h += '<button onclick="goToday()" class="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700">Today</button>';
-  h += '</div></div>';
+  h += '<button onclick="navWeek(-1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">&#9664; Prev</button>';
+  h += '</div>';
+  h += '<span class="font-semibold text-gray-700">' + fmtWeekRange(curWeek) + '</span>';
+  h += '<button onclick="navWeek(1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">Next &#9654;</button>';
+  h += '</div>';
 
   // Check if there are clearable days (unpaid or empty, not paid)
   var hasClearable = wkDays.some(function(d) { return d.st !== 'paid' && (d.h > 0 || d.st === 'unpaid' || d.a !== 0 || d.n); });
@@ -608,19 +609,19 @@ function renderWeek(el) {
   }
   h += '</div>';
 
-  // Make a Payment (all unpaid days, accounting for parking + credit)
+  // Make a Payment (show when unpaid days OR outstanding balance)
   var allUnpaid = unpaidDays();
   var bal = getBalance();
   var credit = getCredits();
   var rawTotal = unpaidTotal();
   var parkingDed = totalParkingDeduction();
   var hasDeductions = (credit > 0 || parkingDed > 0);
-  if (allUnpaid.length > 0) {
+  var showPayment = allUnpaid.length > 0 || bal > 0;
+  if (showPayment) {
     h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
     h += '<div class="flex items-center justify-between flex-wrap gap-2">';
     h += '<div>';
-    if (hasDeductions) {
-      // Show the math: total - parking - credit = balance
+    if (allUnpaid.length > 0 && hasDeductions) {
       h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) ' + fmt$(rawTotal) + '</span>';
       if (parkingDed > 0) {
         h += '<div class="mt-1"><span class="text-sm text-green-600">Parking deduction: -' + fmt$(parkingDed) + '</span></div>';
@@ -628,10 +629,14 @@ function renderWeek(el) {
       if (credit > 0) {
         h += '<div class="mt-1"><span class="text-sm text-green-600">Credit from overpayment: -' + fmt$(credit) + '</span></div>';
       }
-      h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">Pay ' + fmt$(bal) + '</span></div>';
-    } else {
+      h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">Balance: ' + fmt$(bal) + '</span></div>';
+    } else if (allUnpaid.length > 0) {
       h += '<span class="font-medium text-green-800">' + allUnpaid.length + ' unpaid day(s)</span>';
       h += ' <span class="text-green-700 font-bold text-lg">' + fmt$(rawTotal) + '</span>';
+    } else if (bal > 0) {
+      // No unpaid days but outstanding balance from underpayment
+      h += '<span class="font-medium text-amber-700">Outstanding balance from prior payment</span>';
+      h += '<div class="mt-1"><span class="font-bold text-lg text-amber-800">' + fmt$(bal) + '</span></div>';
     }
     h += '</div>';
     h += '<button onclick="togglePayWeek()" class="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Make a Payment</button>';
@@ -1042,9 +1047,9 @@ function confirmPayment() {
   var dt = document.getElementById('pwDate').value;
   var amt = parseFloat(document.getElementById('pwAmt').value) || 0;
   if (!dt) { alert('Enter a payment date'); return; }
-  // Mark ALL unpaid days as paid
+  // Only mark unpaid days on or before the payment date
   days.forEach(function(dy) {
-    if (dy.st === 'unpaid') { dy.st = 'paid'; dy.pd = dt; }
+    if (dy.st === 'unpaid' && dy.d.substring(0, 10) <= dt) { dy.st = 'paid'; dy.pd = dt; }
   });
   if (amt > 0) pmts.push({id: 'p' + (pmts.length + 1), dt: dt, amt: amt});
   payingWeek = false; render();
