@@ -1,4 +1,4 @@
-var CACHE_NAME = 'nanny-tracker-v2';
+var CACHE_NAME = 'nanny-tracker-v3';
 var urlsToCache = [
   './',
   './index.html'
