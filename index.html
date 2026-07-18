@@ -191,12 +191,15 @@ function saveToFirestore() {
   db.collection('data').doc('categories').set({ items: JSON.stringify(CATS) });
 }
 
+function serverGet(docRef) {
+  return docRef.get({source: 'server'}).catch(function() { return docRef.get(); });
+}
 function loadFromFirestore() {
   if (!currentUser) return;
   Promise.all([
-    db.collection('data').doc('days').get(),
-    db.collection('data').doc('payments').get(),
-    db.collection('data').doc('categories').get()
+    serverGet(db.collection('data').doc('days')),
+    serverGet(db.collection('data').doc('payments')),
+    serverGet(db.collection('data').doc('categories'))
   ]).then(function(docs) {
     if (docs[0].exists) {
       try { days = JSON.parse(docs[0].data().items); } catch(e) {}
@@ -1175,8 +1178,8 @@ function saveBsToFirestore() {
 function loadBsFromFirestore() {
   if (!currentUser) return;
   return Promise.all([
-    db.collection('data').doc('bsSitters').get(),
-    db.collection('data').doc('bsSessions').get()
+    serverGet(db.collection('data').doc('bsSitters')),
+    serverGet(db.collection('data').doc('bsSessions'))
   ]).then(function(docs) {
     if (docs[0].exists) { try { bsSitters = JSON.parse(docs[0].data().items); } catch(e) {} }
     if (docs[1].exists) { try { bsSessions = JSON.parse(docs[1].data().items); } catch(e) {} }
