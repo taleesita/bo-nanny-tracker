@@ -181,8 +181,11 @@ auth.onAuthStateChanged(function(user) {
 });
 
 // ====== FIRESTORE SYNC ======
+var _unsubscribers = [];
+var _remoteUpdate = false;
+
 function saveToFirestore() {
-  if (!currentUser) return;
+  if (!currentUser || _remoteUpdate) return;
   db.collection('data').doc('days').set({ items: JSON.stringify(days) });
   db.collection('data').doc('payments').set({ items: JSON.stringify(pmts) });
   db.collection('data').doc('categories').set({ items: JSON.stringify(CATS) });
@@ -205,12 +208,68 @@ function loadFromFirestore() {
       try { CATS = JSON.parse(docs[2].data().items); } catch(e) {}
     }
     render();
-    // Also load babysitter data
     loadBsFromFirestore();
+    startRealtimeSync();
   }).catch(function(err) {
     console.log('Firestore load error (using local data):', err);
     render();
   });
+}
+
+function startRealtimeSync() {
+  _unsubscribers.forEach(function(u) { u(); });
+  _unsubscribers = [];
+  _unsubscribers.push(db.collection('data').doc('days').onSnapshot(function(doc) {
+    if (!doc.exists || doc.metadata.hasPendingWrites) return;
+    try {
+      var d = JSON.parse(doc.data().items);
+      if (JSON.stringify(d) !== JSON.stringify(days)) {
+        days = d; _remoteUpdate = true; render(); _remoteUpdate = false;
+      }
+    } catch(e) {}
+  }));
+  _unsubscribers.push(db.collection('data').doc('payments').onSnapshot(function(doc) {
+    if (!doc.exists || doc.metadata.hasPendingWrites) return;
+    try {
+      var p = JSON.parse(doc.data().items);
+      if (JSON.stringify(p) !== JSON.stringify(pmts)) {
+        pmts = p; _remoteUpdate = true; render(); _remoteUpdate = false;
+      }
+    } catch(e) {}
+  }));
+  _unsubscribers.push(db.collection('data').doc('categories').onSnapshot(function(doc) {
+    if (!doc.exists || doc.metadata.hasPendingWrites) return;
+    try {
+      var c = JSON.parse(doc.data().items);
+      if (JSON.stringify(c) !== JSON.stringify(CATS)) {
+        CATS = c; _remoteUpdate = true; render(); _remoteUpdate = false;
+      }
+    } catch(e) {}
+  }));
+  _unsubscribers.push(db.collection('data').doc('bsSitters').onSnapshot(function(doc) {
+    if (!doc.exists || doc.metadata.hasPendingWrites) return;
+    try {
+      var s = JSON.parse(doc.data().items);
+      if (JSON.stringify(s) !== JSON.stringify(bsSitters)) {
+        bsSitters = s;
+        if (document.getElementById('babysitterContent').style.display !== 'none') {
+          _remoteUpdate = true; renderBabysitter(); _remoteUpdate = false;
+        }
+      }
+    } catch(e) {}
+  }));
+  _unsubscribers.push(db.collection('data').doc('bsSessions').onSnapshot(function(doc) {
+    if (!doc.exists || doc.metadata.hasPendingWrites) return;
+    try {
+      var ss = JSON.parse(doc.data().items);
+      if (JSON.stringify(ss) !== JSON.stringify(bsSessions)) {
+        bsSessions = ss;
+        if (document.getElementById('babysitterContent').style.display !== 'none') {
+          _remoteUpdate = true; renderBabysitter(); _remoteUpdate = false;
+        }
+      }
+    } catch(e) {}
+  }));
 }
 
 // ====== CONFIG ======
@@ -1109,7 +1168,7 @@ function switchMode(mode) {
 
 // ====== BABYSITTER FIRESTORE ======
 function saveBsToFirestore() {
-  if (!currentUser) return;
+  if (!currentUser || _remoteUpdate) return;
   db.collection('data').doc('bsSitters').set({ items: JSON.stringify(bsSitters) });
   db.collection('data').doc('bsSessions').set({ items: JSON.stringify(bsSessions) });
 }
