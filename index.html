@@ -121,6 +121,7 @@ var firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 var db = firebase.firestore();
+db.settings({ experimentalForceLongPolling: true });
 db.enablePersistence({synchronizeTabs: true}).catch(function(err) {
   console.log('Offline persistence error:', err.code);
 });
@@ -183,38 +184,70 @@ auth.onAuthStateChanged(function(user) {
 // ====== FIRESTORE SYNC ======
 var _unsubscribers = [];
 var _remoteUpdate = false;
+var _dataLoaded = false;
+var _lastBackup = 0;
+var BACKUP_INTERVAL = 1000 * 60 * 60; // backup at most once per hour
 
 function saveToFirestore() {
-  if (!currentUser || _remoteUpdate) return;
-  db.collection('data').doc('days').set({ items: JSON.stringify(days) });
-  db.collection('data').doc('payments').set({ items: JSON.stringify(pmts) });
-  db.collection('data').doc('categories').set({ items: JSON.stringify(CATS) });
+  if (!currentUser || _remoteUpdate || !_dataLoaded) return;
+  var now = Date.now();
+  db.collection('data').doc('days').set({
+    items: JSON.stringify(days),
+    updatedAt: now,
+    dayCount: days.length
+  });
+  db.collection('data').doc('payments').set({
+    items: JSON.stringify(pmts),
+    updatedAt: now,
+    pmtCount: pmts.length
+  });
+  db.collection('data').doc('categories').set({ items: JSON.stringify(CATS), updatedAt: now });
+  // Auto-backup (at most once per hour)
+  if (now - _lastBackup > BACKUP_INTERVAL) {
+    _lastBackup = now;
+    var backupId = new Date().toISOString().substring(0, 10);
+    db.collection('backups').doc(backupId).set({
+      days: JSON.stringify(days),
+      payments: JSON.stringify(pmts),
+      categories: JSON.stringify(CATS),
+      dayCount: days.length,
+      pmtCount: pmts.length,
+      ts: now
+    }).then(function() {
+      console.log('Backup saved:', backupId, '(' + days.length + ' days, ' + pmts.length + ' payments)');
+    }).catch(function(e) { console.log('Backup error:', e); });
+  }
 }
 
-function serverGet(docRef) {
-  return docRef.get({source: 'server'}).catch(function() { return docRef.get(); });
-}
 function loadFromFirestore() {
   if (!currentUser) return;
+  // Load from default source (cache-first when offline, server when online)
   Promise.all([
-    serverGet(db.collection('data').doc('days')),
-    serverGet(db.collection('data').doc('payments')),
-    serverGet(db.collection('data').doc('categories'))
+    db.collection('data').doc('days').get(),
+    db.collection('data').doc('payments').get(),
+    db.collection('data').doc('categories').get()
   ]).then(function(docs) {
-    if (docs[0].exists) {
-      try { days = JSON.parse(docs[0].data().items); } catch(e) {}
+    var serverDays = [], serverPmts = [], serverCats = {};
+    if (docs[0].exists) { try { serverDays = JSON.parse(docs[0].data().items); } catch(e) {} }
+    if (docs[1].exists) { try { serverPmts = JSON.parse(docs[1].data().items); } catch(e) {} }
+    if (docs[2].exists) { try { serverCats = JSON.parse(docs[2].data().items); } catch(e) {} }
+    // Conflict check: keep whichever dataset has MORE data (never overwrite larger with smaller)
+    if (days.length > serverDays.length && days.length > 0) {
+      console.warn('LOCAL data has more entries (' + days.length + ') than server (' + serverDays.length + '). Keeping local and pushing to server.');
+      _dataLoaded = true;
+      render(); // render triggers saveToFirestore, pushing local data to server
+    } else {
+      days = serverDays;
+      pmts = serverPmts;
+      if (Object.keys(serverCats).length > 0) CATS = serverCats;
+      _dataLoaded = true;
+      render();
     }
-    if (docs[1].exists) {
-      try { pmts = JSON.parse(docs[1].data().items); } catch(e) {}
-    }
-    if (docs[2].exists) {
-      try { CATS = JSON.parse(docs[2].data().items); } catch(e) {}
-    }
-    render();
     loadBsFromFirestore();
     startRealtimeSync();
   }).catch(function(err) {
     console.log('Firestore load error (using local data):', err);
+    _dataLoaded = true;
     render();
   });
 }
@@ -279,6 +312,15 @@ function startRealtimeSync() {
 var RATE = 30, TOLL = 12;
 var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50, deducted weekly
 var PARKING_START = '2026-06-06'; // Sat start of first week with parking deduction
+var RECONSTRUCTED_START = '2026-04-11';
+var RECONSTRUCTED_END = '2026-07-18';
+function isReconstructedWeek(satKey) {
+  // A week (Sat-Fri) overlaps the reconstructed range if
+  // the Saturday <= RECONSTRUCTED_END and the Friday >= RECONSTRUCTED_START
+  var sat = new Date(satKey + 'T12:00:00');
+  var fri = new Date(sat); fri.setDate(fri.getDate() + 6);
+  return ds(fri) >= RECONSTRUCTED_START && satKey <= RECONSTRUCTED_END;
+}
 var DHRS = {Mon:8, Tue:8, Wed:8, Thu:8, Fri:5, Sat:8, Sun:8};
 var DTIMES = {Mon:['09:00','17:00'], Tue:['09:00','17:00'], Wed:['09:00','17:00'], Thu:['09:00','17:00'], Fri:['09:00','14:00']};
 var CATS = {
@@ -378,7 +420,74 @@ var days = [
 {d:'2026-04-08',w:'Wed',s:'09:00',e:'14:00',h:5,a:102,n:'',c:'regular',st:'paid',pd:'2026-04-10'},
 {d:'2026-04-09',w:'Thu',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'paid',pd:'2026-04-10'},
 {d:'2026-04-10',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'paid',pd:'2026-04-10'},
-{d:'2026-04-11',w:'Sat',s:'13:00',e:'17:30',h:4.5,a:12,n:'',c:'regular',st:'unpaid',pd:null}
+{d:'2026-04-11',w:'Sat',s:'13:00',e:'17:30',h:4.5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-13',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-14',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-15',w:'Wed',s:'08:00',e:'17:00',h:9,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-16',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-20',w:'Mon',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-04-21',w:'Tue',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-04-22',w:'Wed',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-04-23',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-27',w:'Mon',s:'09:00',e:'13:00',h:4,a:12,n:'Time with SoomSoom',c:'regular',st:'unpaid',pd:null},
+{d:'2026-04-28',w:'Tue',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-04-29',w:'Wed',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-04-30',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-01',w:'Fri',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-04',w:'Mon',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-05',w:'Tue',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-06',w:'Wed',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-07',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-08',w:'Fri',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-11',w:'Mon',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-12',w:'Tue',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-13',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-14',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-18',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-19',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-20',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-21',w:'Thu',s:'',e:'',h:0,a:0,n:'',c:'holiday',st:'unpaid',pd:null},
+{d:'2026-05-25',w:'Mon',s:'09:00',e:'16:00',h:7,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-26',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-27',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-28',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-05-29',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-01',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-02',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-03',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-04',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-05',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-08',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-09',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-10',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-11',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-12',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-15',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-16',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-17',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-18',w:'Thu',s:'09:00',e:'13:30',h:4.5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-19',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-22',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-23',w:'Tue',s:'10:00',e:'17:00',h:7,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-24',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-25',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-26',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-29',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-06-30',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-01',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-02',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-03',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-06',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-07',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-08',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-09',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-10',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-11',w:'Sat',s:'11:45',e:'16:45',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-13',w:'Mon',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-14',w:'Tue',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-15',w:'Wed',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-16',w:'Thu',s:'09:00',e:'17:00',h:8,a:12,n:'',c:'regular',st:'unpaid',pd:null},
+{d:'2026-07-17',w:'Fri',s:'09:00',e:'14:00',h:5,a:12,n:'',c:'regular',st:'unpaid',pd:null}
 ];
 var pmts = [
 {id:'p1',dt:'2025-12-19',amt:1410},{id:'p2',dt:'2025-12-23',amt:1134},
@@ -612,7 +721,9 @@ function renderWeek(el) {
   h += '<button onclick="goToday()" class="px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700">Today</button>';
   h += '<button onclick="navWeek(-1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">&#9664; Prev</button>';
   h += '</div>';
-  h += '<span class="font-semibold text-gray-700">' + fmtWeekRange(curWeek) + '</span>';
+  var weekRangeLabel = fmtWeekRange(curWeek);
+  if (isReconstructedWeek(ds(curWeek))) weekRangeLabel += ' *';
+  h += '<span class="font-semibold text-gray-700">' + weekRangeLabel + '</span>';
   h += '<button onclick="navWeek(1)" class="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700">Next &#9654;</button>';
   h += '</div>';
 
@@ -715,6 +826,9 @@ function renderWeek(el) {
     h += '</div>';
   }
 
+  if (isReconstructedWeek(ds(curWeek))) {
+    h += '<p class="text-xs text-gray-400 mt-3 italic">*Hours were reconstructed from calendar data and may not reflect actual hours worked.</p>';
+  }
 
   el.innerHTML = h;
 }
@@ -926,6 +1040,8 @@ function renderHist(el) {
     // Header label: "Wk of 5/11" or "Wks of 4/27, 5/4, 5/11"
     var weekLabels = block.weeks.map(function(w) { return w.monLabel; });
     var headerLabel = (multiWeek ? 'Wks of ' : 'Wk of ') + weekLabels.join(', ');
+    var blockReconstructed = block.weeks.some(function(w) { return isReconstructedWeek(w.key); });
+    if (blockReconstructed) headerLabel += ' *';
 
     h += '<div class="bg-white rounded-lg shadow-sm overflow-hidden">';
     h += '<div class="px-4 py-2.5 flex justify-between items-center cursor-pointer hover:bg-indigo-50" onclick="toggleHist(\'' + blockId + '\')">';
@@ -994,6 +1110,7 @@ function renderHist(el) {
     h += '</div></div>';
   });
   h += '</div>';
+  h += '<p class="text-xs text-gray-400 mt-4 italic">*Hours for weeks of 4/11–7/18 were reconstructed from calendar data and may not reflect actual hours worked.</p>';
   el.innerHTML = h;
 }
 
@@ -1171,15 +1288,16 @@ function switchMode(mode) {
 
 // ====== BABYSITTER FIRESTORE ======
 function saveBsToFirestore() {
-  if (!currentUser || _remoteUpdate) return;
-  db.collection('data').doc('bsSitters').set({ items: JSON.stringify(bsSitters) });
-  db.collection('data').doc('bsSessions').set({ items: JSON.stringify(bsSessions) });
+  if (!currentUser || _remoteUpdate || !_dataLoaded) return;
+  var now = Date.now();
+  db.collection('data').doc('bsSitters').set({ items: JSON.stringify(bsSitters), updatedAt: now });
+  db.collection('data').doc('bsSessions').set({ items: JSON.stringify(bsSessions), updatedAt: now });
 }
 function loadBsFromFirestore() {
   if (!currentUser) return;
   return Promise.all([
-    serverGet(db.collection('data').doc('bsSitters')),
-    serverGet(db.collection('data').doc('bsSessions'))
+    db.collection('data').doc('bsSitters').get(),
+    db.collection('data').doc('bsSessions').get()
   ]).then(function(docs) {
     if (docs[0].exists) { try { bsSitters = JSON.parse(docs[0].data().items); } catch(e) {} }
     if (docs[1].exists) { try { bsSessions = JSON.parse(docs[1].data().items); } catch(e) {} }
