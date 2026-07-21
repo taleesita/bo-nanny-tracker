@@ -333,10 +333,9 @@ var CATS = {
 };
 
 // ====== DATA ======
-var days = [
-];
-var pmts = [
-];
+var days = [];
+var pmts = [];
+
 
 // ====== STATE ======
 var curMode = 'nanny'; // 'nanny' or 'babysitter'
@@ -676,7 +675,7 @@ function renderDayCard(dy) {
   var isEmpty = (dy.st === '');
   var bdr = dy.st === 'paid' ? 'border-green-400' : dy.st === 'unpaid' ? 'border-amber-400' : 'border-gray-200';
   var isEditing = (editingDate === dy.d);
-  var clickable = (dy.st !== 'paid' && !isEditing);
+  var clickable = !isEditing;
 
   var h = '<div class="border-l-4 ' + bdr + ' bg-white rounded-lg p-3 shadow-sm flex flex-col';
   if (isEditing) h += ' ring-2 ring-indigo-400';
@@ -785,7 +784,11 @@ function renderEditPanel(dy) {
   h += '<input type="text" id="ed-notes" value="' + (dy.n || '').replace(/"/g, '&quot;') + '" class="w-full px-2 py-2 border rounded-lg text-sm" placeholder="Optional"></div>';
   // Buttons
   h += '<div class="flex flex-wrap gap-2 mt-3">';
-  h += '<button onclick="saveDay()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">Save as Unpaid</button>';
+  if (dy.st === 'paid') {
+    h += '<button onclick="saveDay(true)" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">Save</button>';
+  } else {
+    h += '<button onclick="saveDay()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">Save as Unpaid</button>';
+  }
   h += '<button onclick="clearDay()" class="px-4 py-2 bg-red-500 text-white rounded-lg text-sm hover:bg-red-600">Clear Day</button>';
   h += '<button onclick="cancelEdit()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm">Cancel</button>';
   h += '</div></div>';
@@ -992,7 +995,7 @@ function onEditCatChange() {
   }
 }
 
-function saveDay() {
+function saveDay(keepPaid) {
   var dy = findDay(editingDate); if (!dy) return;
   dy.c = document.getElementById('ed-cat').value;
   dy.s = document.getElementById('ed-start').value;
@@ -1000,7 +1003,7 @@ function saveDay() {
   dy.h = parseFloat(document.getElementById('ed-hours').value) || 0;
   dy.a = parseFloat(document.getElementById('ed-addons').value) || 0;
   dy.n = document.getElementById('ed-notes').value;
-  dy.st = 'unpaid'; dy.pd = null;
+  if (!keepPaid) { dy.st = 'unpaid'; dy.pd = null; }
   editingDate = null; render();
 }
 function clearDay() {
