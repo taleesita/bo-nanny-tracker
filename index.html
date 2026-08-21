@@ -352,6 +352,7 @@ var bsEditingSitter = null; // sitter id being edited, or 'new'
 var bsEditingSession = null; // session id being edited, or 'new'
 var bsSelectedSitter = null; // currently selected sitter for viewing
 var bsPayingSession = null; // session id being paid
+var bsPayingSitter = null; // sitter id for lump payment
 var bsTempSession = null; // holds in-progress new session form data across re-renders
 
 // ====== HELPERS ======
@@ -1191,9 +1192,30 @@ function renderBabysitter() {
       unpaidBar += '<div class="bg-white/20 rounded-lg px-3 py-1.5 text-center">';
       unpaidBar += '<div class="text-xs opacity-80">' + name + ' Unpaid</div>';
       unpaidBar += '<div class="text-lg font-bold">' + fmt$(unpaidBySitter[sid]) + '</div>';
+      unpaidBar += '<button onclick="bsStartPaySitter(\'' + sid + '\')" class="mt-1 px-3 py-1 bg-white/30 hover:bg-white/50 rounded text-xs font-medium">Pay All</button>';
       unpaidBar += '</div>';
     });
     unpaidBar += '</div>';
+  }
+  // Lump payment form for a sitter
+  if (bsPayingSitter) {
+    var paySitter = bsFindSitter(bsPayingSitter);
+    var payName = paySitter ? paySitter.name : '?';
+    var payUnpaidSessions = bsSessions.filter(function(s) { return s.sitterId === bsPayingSitter && s.status !== 'paid'; });
+    var payTotal = 0; payUnpaidSessions.forEach(function(s) { payTotal += bsSessionTotal(s); });
+    unpaidBar += '<div class="bg-white/20 rounded-lg p-3 mt-3">';
+    unpaidBar += '<div class="text-sm font-medium mb-2">Pay ' + payName + ' — ' + payUnpaidSessions.length + ' unpaid session(s)</div>';
+    unpaidBar += '<div class="text-xs opacity-80 mb-2">';
+    payUnpaidSessions.forEach(function(s) {
+      unpaidBar += fmtShort(s.date) + ' (' + s.hours + 'h = ' + fmt$(bsSessionTotal(s)) + ')  ';
+    });
+    unpaidBar += '</div>';
+    unpaidBar += '<div class="flex flex-wrap gap-2 items-end">';
+    unpaidBar += '<div><label class="text-xs block">Date</label><input type="date" id="bslp-date" value="' + ds(new Date()) + '" class="px-2 py-1 border rounded text-sm text-gray-800"></div>';
+    unpaidBar += '<div><label class="text-xs block">Amount</label><input type="number" id="bslp-amt" step="0.01" value="' + payTotal.toFixed(2) + '" class="px-2 py-1 border rounded text-sm w-24 text-gray-800"></div>';
+    unpaidBar += '<button onclick="bsConfirmPaySitter()" class="px-3 py-1 bg-green-600 text-white rounded text-xs">Confirm</button>';
+    unpaidBar += '<button onclick="bsPayingSitter=null;renderBabysitter()" class="px-3 py-1 bg-gray-300 text-gray-700 rounded text-xs">Cancel</button>';
+    unpaidBar += '</div></div>';
   }
   document.getElementById('bsUnpaidBar').innerHTML = unpaidBar;
   var el = document.getElementById('bsMain');
@@ -1478,6 +1500,22 @@ function bsToggleDetail(id) {
   if (el) el.classList.toggle('hidden');
 }
 function bsStartPaySession(id) { bsPayingSession = id; renderBabysitter(); }
+function bsStartPaySitter(sitterId) { bsPayingSitter = sitterId; renderBabysitter(); }
+function bsConfirmPaySitter() {
+  if (!bsPayingSitter) return;
+  var date = document.getElementById('bslp-date').value;
+  var amt = parseFloat(document.getElementById('bslp-amt').value) || 0;
+  if (!date) { alert('Enter payment date'); return; }
+  bsSessions.forEach(function(s) {
+    if (s.sitterId === bsPayingSitter && s.status !== 'paid') {
+      s.status = 'paid';
+      s.paidDate = date;
+      s.paidAmt = amt;
+    }
+  });
+  bsPayingSitter = null;
+  renderBabysitter();
+}
 function bsConfirmPay(id) {
   var sess = bsFindSession(id);
   if (!sess) return;
