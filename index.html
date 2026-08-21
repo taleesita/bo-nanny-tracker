@@ -90,11 +90,11 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 0 }
 <!-- BABYSITTER MODE -->
 <div id="babysitterContent" style="display:none">
 <div class="bg-gradient-to-r from-pink-500 to-rose-600 text-white">
-  <div class="max-w-5xl mx-auto px-4 py-4 grid grid-cols-3 gap-4 text-center">
+  <div class="max-w-5xl mx-auto px-4 py-4 grid grid-cols-2 gap-4 text-center">
     <div><div class="text-xs opacity-80">Sitters</div><div class="text-lg font-bold" id="bsSitterCount">0</div></div>
     <div><div class="text-xs opacity-80">Total Sessions</div><div class="text-lg font-bold" id="bsSessionCount">0</div></div>
-    <div><div class="text-xs opacity-80">Unpaid</div><div class="text-lg font-bold" id="bsUnpaid">$0</div></div>
   </div>
+  <div class="max-w-5xl mx-auto px-4 pb-4" id="bsUnpaidBar"></div>
 </div>
 <main class="max-w-5xl mx-auto px-4 py-6" id="bsMain"></main>
 </div><!-- end babysitterContent -->
@@ -1173,7 +1173,29 @@ function renderBabysitter() {
   saveBsToFirestore();
   document.getElementById('bsSitterCount').textContent = bsSitters.length;
   document.getElementById('bsSessionCount').textContent = bsSessions.length;
-  document.getElementById('bsUnpaid').textContent = fmt$(bsUnpaidTotal());
+  // Per-sitter unpaid breakdown
+  var unpaidBar = '';
+  var unpaidBySitter = {};
+  bsSessions.forEach(function(s) {
+    if (s.status !== 'paid') {
+      if (!unpaidBySitter[s.sitterId]) unpaidBySitter[s.sitterId] = 0;
+      unpaidBySitter[s.sitterId] += bsSessionTotal(s);
+    }
+  });
+  var sitterIds = Object.keys(unpaidBySitter);
+  if (sitterIds.length > 0) {
+    unpaidBar += '<div class="flex flex-wrap gap-3 justify-center">';
+    sitterIds.forEach(function(sid) {
+      var sitter = bsFindSitter(sid);
+      var name = sitter ? sitter.name : 'Unknown';
+      unpaidBar += '<div class="bg-white/20 rounded-lg px-3 py-1.5 text-center">';
+      unpaidBar += '<div class="text-xs opacity-80">' + name + ' Unpaid</div>';
+      unpaidBar += '<div class="text-lg font-bold">' + fmt$(unpaidBySitter[sid]) + '</div>';
+      unpaidBar += '</div>';
+    });
+    unpaidBar += '</div>';
+  }
+  document.getElementById('bsUnpaidBar').innerHTML = unpaidBar;
   var el = document.getElementById('bsMain');
   var h = '';
 
