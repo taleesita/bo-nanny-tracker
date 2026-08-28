@@ -312,6 +312,7 @@ function startRealtimeSync() {
 var RATE = 30, TOLL = 12;
 var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50, deducted weekly
 var PARKING_START = '2026-06-06'; // Sat start of first week with parking deduction
+var PARKING_END = '2026-08-01'; // Sat of first week WITHOUT parking (no parking in Aug)
 var RECONSTRUCTED_START = '2026-04-11';
 var RECONSTRUCTED_END = '2026-07-18';
 function isReconstructedWeek(satKey) {
@@ -483,7 +484,7 @@ function unpaidParkingWeeks() {
       var dt = new Date(dateStr + 'T12:00:00');
       if (!isNaN(dt.getTime())) {
         var sat = ds(getMon(dt));
-        if (sat >= PARKING_START) weeks[sat] = true;
+        if (weekHasParking(sat)) weeks[sat] = true;
       }
     }
   });
@@ -493,8 +494,9 @@ function totalParkingDeduction() {
   return unpaidParkingWeeks() * PARKING_WEEKLY;
 }
 // Check if a specific week (by its Saturday key) has parking
+var PARKING_RESUME = '2026-08-29'; // Sat of first week parking resumes (Sep)
 function weekHasParking(satKey) {
-  return satKey >= PARKING_START;
+  return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
 }
 // Balance = unpaid total minus parking deductions minus credits
 function getBalance() {
