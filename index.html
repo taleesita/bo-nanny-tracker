@@ -124,6 +124,15 @@ var db = firebase.firestore();
 db.settings({ experimentalForceLongPolling: true });
 db.enablePersistence({synchronizeTabs: true}).catch(function(err) {
   console.log('Offline persistence error:', err.code);
+  if (err.code === 'unimplemented' || err.message && err.message.indexOf('Quota') >= 0) {
+    // Storage full or unsupported — clear Firestore cache and retry without persistence
+    try {
+      if (window.indexedDB) { indexedDB.deleteDatabase('firestore/[DEFAULT]/bo-s-nanny-tracker'); }
+      if (window.localStorage) {
+        Object.keys(localStorage).forEach(function(k) { if (k.indexOf('firestore') >= 0) localStorage.removeItem(k); });
+      }
+    } catch(e) { console.log('Cache cleanup failed:', e); }
+  }
 });
 var auth = firebase.auth();
 var ALLOWED_EMAILS = ['taly.matiteyahu@gmail.com', 'doug.pickard@gmail.com'];
@@ -578,22 +587,28 @@ function switchTab(tab) {
   render();
 }
 function render() {
-  saveToFirestore();
-  var bal = getBalance();
-  if (bal < 0) {
-    document.getElementById('sDue').textContent = '-' + fmt$(Math.abs(bal));
-    document.getElementById('sDue').className = 'text-lg font-bold text-green-200';
-    document.getElementById('sDueLabel').textContent = 'Credit';
-  } else {
-    document.getElementById('sDue').textContent = fmt$(bal);
-    document.getElementById('sDue').className = 'text-lg font-bold';
-    document.getElementById('sDueLabel').textContent = 'Balance Due';
+  try {
+    saveToFirestore();
+    var bal = getBalance();
+    if (bal < 0) {
+      document.getElementById('sDue').textContent = '-' + fmt$(Math.abs(bal));
+      document.getElementById('sDue').className = 'text-lg font-bold text-green-200';
+      document.getElementById('sDueLabel').textContent = 'Credit';
+    } else {
+      document.getElementById('sDue').textContent = fmt$(bal);
+      document.getElementById('sDue').className = 'text-lg font-bold';
+      document.getElementById('sDueLabel').textContent = 'Balance Due';
+    }
+    document.getElementById('sPaid').textContent = fmt$(paidTotal());
+    document.getElementById('sUnpaid').textContent = unpaidDays().length;
+    var m = document.getElementById('main');
+    if (curView === 'week') renderWeek(m);
+    else renderHist(m);
+  } catch(e) {
+    console.error('render() error:', e);
+    var m = document.getElementById('main');
+    if (m) m.innerHTML = '<div class="bg-red-50 border border-red-200 rounded-lg p-4 m-4"><p class="text-red-700 font-medium">Something went wrong</p><p class="text-red-600 text-sm mt-1">' + e.message + '</p><p class="text-xs text-gray-500 mt-2">Check browser console for details. Try refreshing the page.</p></div>';
   }
-  document.getElementById('sPaid').textContent = fmt$(paidTotal());
-  document.getElementById('sUnpaid').textContent = unpaidDays().length;
-  var m = document.getElementById('main');
-  if (curView === 'week') renderWeek(m);
-  else renderHist(m);
 }
 
 function renderWeek(el) {
@@ -700,17 +715,21 @@ function renderWeek(el) {
     }
     var hasAdjustments = (credit > 0 || parkingDed > 0 || otTotal > 0);
     if (allUnpaid.length > 0 && hasAdjustments) {
+      var running = rawTotal;
       h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) · ' + fmt$(rawTotal) + '</span>';
       if (otTotal > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime: +' + fmt$(otTotal) + '</span></div>';
+        running += otTotal;
+        h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime: +' + fmt$(otTotal) + ' = ' + fmt$(running) + '</span></div>';
       }
       if (parkingDed > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(parkingDed) + '</span></div>';
+        running -= parkingDed;
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(parkingDed) + ' = ' + fmt$(running) + '</span></div>';
       }
       if (credit > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-green-600">Credit: -' + fmt$(credit) + '</span></div>';
+        running -= credit;
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Credit: -' + fmt$(credit) + ' = ' + fmt$(running) + '</span></div>';
       }
-      h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">' + fmt$(bal) + '</span></div>';
+      h += '<div class="mt-2 pt-2 border-t border-green-300"><span class="font-bold text-xl text-green-800">Total Due: ' + fmt$(bal) + '</span></div>';
     } else if (allUnpaid.length > 0) {
       h += '<span class="font-medium text-green-800">' + allUnpaid.length + ' unpaid day(s)</span>';
       h += ' <span class="text-green-700 font-bold text-lg">' + fmt$(rawTotal + otTotal) + '</span>';
