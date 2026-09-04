@@ -664,72 +664,58 @@ function renderWeek(el) {
     if (edy) h += renderEditPanel(edy);
   }
 
-  // Week total with hours, overtime, parking
+  // Week total + Payment (consolidated when this week has unpaid days)
   var curSat = ds(curWeek);
   var hasParking = weekHasParking(curSat);
   var weekNet = hasParking ? wt - PARKING_WEEKLY : wt;
-  h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block mb-4">';
-  // Hours line
-  if (weekHrs > 0) {
-    h += '<div class="mb-1"><span class="text-sm text-gray-500">Hours: </span>';
-    h += '<span class="text-sm font-semibold text-gray-700">' + weekHrs + 'h</span>';
-    if (otPremium > 0) {
-      var otHrs = getWeekWorkedHours(wkDays) - 40;
-      h += '<span class="ml-2 text-xs font-medium text-orange-600">(' + otHrs + 'h overtime)</span>';
-    }
-    h += '</div>';
-  }
-  if (hasParking && wt > 0) {
-    h += '<div><span class="text-sm text-gray-500">Week Total: </span>';
-    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
-    if (otPremium > 0) {
-      h += '<span class="ml-1 text-xs text-orange-600">(incl. +' + fmt$(otPremium) + ' OT)</span>';
-    }
-    h += '</div>';
-    h += '<div class="mt-1"><span class="text-sm text-gray-500">Parking: </span>';
-    h += '<span class="text-sm font-medium text-red-500">-' + fmt$(PARKING_WEEKLY) + '</span></div>';
-    h += '<div class="mt-1 pt-1 border-t border-gray-200"><span class="text-sm text-gray-500">Net Total: </span>';
-    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(weekNet) + '</span></div>';
-  } else {
-    h += '<span class="text-sm text-gray-500">Week Total: </span>';
-    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
-    if (otPremium > 0) {
-      h += '<span class="ml-1 text-xs text-orange-600">(incl. +' + fmt$(otPremium) + ' OT)</span>';
-    }
-  }
-  h += '</div>';
-
-  // Make a Payment (show when unpaid days OR outstanding balance)
   var allUnpaid = unpaidDays();
   var bal = getBalance();
   var credit = getCredits();
   var rawTotal = unpaidTotal();
   var otTotal = unpaidOvertimePremium();
   var parkingDed = totalParkingDeduction();
-  var hasDeductions = (credit > 0 || parkingDed > 0 || otTotal > 0);
   var showPayment = allUnpaid.length > 0 || bal > 0;
+
+  if (weekUnpaid.length === 0) {
+    // This week is paid/empty — show standalone week total
+    h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block mb-4">';
+    if (weekHrs > 0) {
+      h += '<div class="mb-1"><span class="text-sm text-gray-500">Hours: </span>';
+      h += '<span class="text-sm font-semibold text-gray-700">' + weekHrs + 'h</span></div>';
+    }
+    h += '<span class="text-sm text-gray-500">Week Total: </span>';
+    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
+    h += '</div>';
+  }
+
   if (showPayment) {
     h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
     h += '<div class="flex items-center justify-between flex-wrap gap-2">';
     h += '<div>';
-    if (allUnpaid.length > 0 && hasDeductions) {
-      h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) ' + fmt$(rawTotal) + '</span>';
+    // Show hours for this week when it has unpaid days
+    if (weekUnpaid.length > 0 && weekHrs > 0) {
+      h += '<div class="text-sm text-green-700 mb-1"><span class="font-semibold">' + weekHrs + 'h</span> this week';
+      if (otPremium > 0) h += ' · <span class="text-orange-600">' + (getWeekWorkedHours(wkDays) - 40) + 'h overtime</span>';
+      h += '</div>';
+    }
+    var hasAdjustments = (credit > 0 || parkingDed > 0 || otTotal > 0);
+    if (allUnpaid.length > 0 && hasAdjustments) {
+      h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) · ' + fmt$(rawTotal) + '</span>';
       if (otTotal > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime premium: +' + fmt$(otTotal) + '</span></div>';
+        h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime: +' + fmt$(otTotal) + '</span></div>';
       }
       if (parkingDed > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-green-600">Parking deduction: -' + fmt$(parkingDed) + '</span></div>';
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(parkingDed) + '</span></div>';
       }
       if (credit > 0) {
-        h += '<div class="mt-1"><span class="text-sm text-green-600">Credit from overpayment: -' + fmt$(credit) + '</span></div>';
+        h += '<div class="mt-1"><span class="text-sm text-green-600">Credit: -' + fmt$(credit) + '</span></div>';
       }
-      h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">Balance: ' + fmt$(bal) + '</span></div>';
+      h += '<div class="mt-1"><span class="font-bold text-lg text-green-800">' + fmt$(bal) + '</span></div>';
     } else if (allUnpaid.length > 0) {
       h += '<span class="font-medium text-green-800">' + allUnpaid.length + ' unpaid day(s)</span>';
-      h += ' <span class="text-green-700 font-bold text-lg">' + fmt$(rawTotal) + '</span>';
+      h += ' <span class="text-green-700 font-bold text-lg">' + fmt$(rawTotal + otTotal) + '</span>';
     } else if (bal > 0) {
-      // No unpaid days but outstanding balance from underpayment
-      h += '<span class="font-medium text-amber-700">Outstanding balance from prior payment</span>';
+      h += '<span class="font-medium text-amber-700">Outstanding balance</span>';
       h += '<div class="mt-1"><span class="font-bold text-lg text-amber-800">' + fmt$(bal) + '</span></div>';
     }
     h += '</div>';
