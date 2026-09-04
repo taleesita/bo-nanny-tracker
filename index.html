@@ -309,7 +309,7 @@ function startRealtimeSync() {
 }
 
 // ====== CONFIG ======
-var RATE = 30, TOLL = 12;
+var RATE = 30, TOLL = 12, OVERTIME_RATE = 45;
 var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50, deducted weekly
 var PARKING_START = '2026-06-06'; // Sat start of first week with parking deduction
 var PARKING_END = '2026-08-01'; // Sat of first week WITHOUT parking (no parking in Aug)
@@ -336,7 +336,6 @@ var CATS = {
 // ====== DATA ======
 var days = [];
 var pmts = [];
-
 
 // ====== STATE ======
 var curMode = 'nanny'; // 'nanny' or 'babysitter'
@@ -500,9 +499,68 @@ function weekHasParking(satKey) {
 }
 // Balance = unpaid total minus parking deductions minus credits
 function getBalance() {
-  return unpaidTotal() - totalParkingDeduction() - getCredits();
+  return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
+
+// ====== OVERTIME ======
+// Total hours for a week (for display)
+function getWeekHours(weekDays) {
+  var total = 0;
+  weekDays.forEach(function(d) {
+    if (d.st === '') return;
+    if (d.d.indexOf('-bonus') >= 0) return;
+    if (isAuto(d.c)) total += (DHRS[d.w] || 0);
+    else total += (d.h || 0);
+  });
+  return total;
+}
+// Regular work hours only (for OT threshold)
+function getWeekWorkedHours(weekDays) {
+  var total = 0;
+  weekDays.forEach(function(d) {
+    if (d.st === '' || d.c !== 'regular') return;
+    total += (d.h || 0);
+  });
+  return total;
+}
+// OT premium for a week: (hours over 40) * ($45 - $30)
+function weekOvertimePremium(weekDays) {
+  var worked = getWeekWorkedHours(weekDays);
+  if (worked > 40) return (worked - 40) * (OVERTIME_RATE - RATE);
+  return 0;
+}
+// Get all days for a week by its Saturday key
+function getWeekDaysForSat(satKey) {
+  var sat = new Date(satKey + 'T12:00:00');
+  var result = [];
+  for (var i = 0; i < 7; i++) {
+    var dt = new Date(sat); dt.setDate(dt.getDate() + i);
+    var id = ds(dt);
+    var found = findDay(id);
+    if (found) result.push(found);
+  }
+  return result;
+}
+// Total OT premium across all weeks with unpaid days
+function unpaidOvertimePremium() {
+  var weeks = {};
+  days.forEach(function(d) {
+    if (d.st === 'unpaid') {
+      var dateStr = d.d.substring(0, 10);
+      var dt = new Date(dateStr + 'T12:00:00');
+      if (!isNaN(dt.getTime())) {
+        var sat = ds(getMon(dt));
+        weeks[sat] = true;
+      }
+    }
+  });
+  var total = 0;
+  Object.keys(weeks).forEach(function(sat) {
+    total += weekOvertimePremium(getWeekDaysForSat(sat));
+  });
+  return total;
+}
 
 // Count days per payment date
 function daysForPayment(pdt) {
@@ -550,6 +608,9 @@ function renderWeek(el) {
     if (!isWknd || showWeekend || dy.st !== '') wkDays.push(dy);
   }
   var wt = 0; wkDays.forEach(function(d) { wt += dayTotal(d); });
+  var weekHrs = getWeekHours(wkDays);
+  var otPremium = weekOvertimePremium(wkDays);
+  wt += otPremium;
   var weekUnpaid = wkDays.filter(function(d) { return d.st === 'unpaid'; });
   var weekUnpaidTotal = 0; weekUnpaid.forEach(function(d) { weekUnpaidTotal += dayTotal(d); });
 
@@ -603,14 +664,28 @@ function renderWeek(el) {
     if (edy) h += renderEditPanel(edy);
   }
 
-  // Week total with parking deduction
+  // Week total with hours, overtime, parking
   var curSat = ds(curWeek);
   var hasParking = weekHasParking(curSat);
   var weekNet = hasParking ? wt - PARKING_WEEKLY : wt;
   h += '<div class="bg-white rounded-lg p-3 shadow-sm border-t-4 border-indigo-600 inline-block mb-4">';
+  // Hours line
+  if (weekHrs > 0) {
+    h += '<div class="mb-1"><span class="text-sm text-gray-500">Hours: </span>';
+    h += '<span class="text-sm font-semibold text-gray-700">' + weekHrs + 'h</span>';
+    if (otPremium > 0) {
+      var otHrs = getWeekWorkedHours(wkDays) - 40;
+      h += '<span class="ml-2 text-xs font-medium text-orange-600">(' + otHrs + 'h overtime)</span>';
+    }
+    h += '</div>';
+  }
   if (hasParking && wt > 0) {
     h += '<div><span class="text-sm text-gray-500">Week Total: </span>';
-    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span></div>';
+    h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
+    if (otPremium > 0) {
+      h += '<span class="ml-1 text-xs text-orange-600">(incl. +' + fmt$(otPremium) + ' OT)</span>';
+    }
+    h += '</div>';
     h += '<div class="mt-1"><span class="text-sm text-gray-500">Parking: </span>';
     h += '<span class="text-sm font-medium text-red-500">-' + fmt$(PARKING_WEEKLY) + '</span></div>';
     h += '<div class="mt-1 pt-1 border-t border-gray-200"><span class="text-sm text-gray-500">Net Total: </span>';
@@ -618,6 +693,9 @@ function renderWeek(el) {
   } else {
     h += '<span class="text-sm text-gray-500">Week Total: </span>';
     h += '<span class="text-lg font-bold text-indigo-600">' + fmt$(wt) + '</span>';
+    if (otPremium > 0) {
+      h += '<span class="ml-1 text-xs text-orange-600">(incl. +' + fmt$(otPremium) + ' OT)</span>';
+    }
   }
   h += '</div>';
 
@@ -626,8 +704,9 @@ function renderWeek(el) {
   var bal = getBalance();
   var credit = getCredits();
   var rawTotal = unpaidTotal();
+  var otTotal = unpaidOvertimePremium();
   var parkingDed = totalParkingDeduction();
-  var hasDeductions = (credit > 0 || parkingDed > 0);
+  var hasDeductions = (credit > 0 || parkingDed > 0 || otTotal > 0);
   var showPayment = allUnpaid.length > 0 || bal > 0;
   if (showPayment) {
     h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
@@ -635,6 +714,9 @@ function renderWeek(el) {
     h += '<div>';
     if (allUnpaid.length > 0 && hasDeductions) {
       h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) ' + fmt$(rawTotal) + '</span>';
+      if (otTotal > 0) {
+        h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime premium: +' + fmt$(otTotal) + '</span></div>';
+      }
       if (parkingDed > 0) {
         h += '<div class="mt-1"><span class="text-sm text-green-600">Parking deduction: -' + fmt$(parkingDed) + '</span></div>';
       }
@@ -853,10 +935,13 @@ function renderHist(el) {
   keys.forEach(function(k) {
     var wk = groups[k];
     var tot = 0; wk.forEach(function(d) { tot += dayTotal(d); });
+    var wkHrs = getWeekHours(wk);
+    var wkOt = weekOvertimePremium(wk);
+    tot += wkOt;
     var pmt = weekPayment(wk);
     var allPaid = wk.every(function(d) { return d.st === 'paid'; });
     var monDt = new Date(k + 'T12:00:00'); monDt.setDate(monDt.getDate() + 2);
-    var wkInfo = {key: k, days: wk, tot: tot, allPaid: allPaid, monLabel: fmtShort(ds(monDt))};
+    var wkInfo = {key: k, days: wk, tot: tot, allPaid: allPaid, monLabel: fmtShort(ds(monDt)), hrs: wkHrs, ot: wkOt};
 
     if (pmt && pmtBlocks[pmt.dt] !== undefined) {
       // Add to existing payment block
@@ -874,7 +959,9 @@ function renderHist(el) {
     var totalDayCount = 0;
     var blockTotal = 0;
     var blockParking = 0;
-    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; if (weekHasParking(w.key)) blockParking += PARKING_WEEKLY; });
+    var blockHrs = 0;
+    var blockOt = 0;
+    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; blockHrs += w.hrs; blockOt += w.ot; if (weekHasParking(w.key)) blockParking += PARKING_WEEKLY; });
     var blockNet = blockTotal - blockParking;
     var allPaid = block.weeks.every(function(w) { return w.allPaid; });
     var multiWeek = block.weeks.length > 1;
@@ -890,7 +977,8 @@ function renderHist(el) {
     h += '<div class="px-4 py-2.5 flex justify-between items-center cursor-pointer hover:bg-indigo-50" onclick="toggleHist(\'' + blockId + '\')">';
     h += '<div class="flex items-center gap-2 flex-wrap">';
     h += '<span class="font-medium text-sm text-gray-800">' + headerLabel + '</span>';
-    h += '<span class="text-xs text-gray-400">' + totalDayCount + ' days</span>';
+    h += '<span class="text-xs text-gray-400">' + totalDayCount + 'd · ' + blockHrs + 'h</span>';
+    if (blockOt > 0) h += '<span class="text-xs text-orange-500">OT</span>';
     if (allPaid) {
       h += '<span class="chip bg-green-100 text-green-700">Paid</span>';
     } else {
@@ -928,19 +1016,30 @@ function renderHist(el) {
     });
     // Subtotal + Payment footer
     if (block.pmtDt) {
-      if (blockParking > 0) {
+      var hasAdjustments = blockParking > 0 || blockOt > 0;
+      if (hasAdjustments) {
+        var basePay = blockTotal - blockOt; // base before OT
         h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-100">';
-        h += '<span class="text-indigo-600">Subtotal</span>';
-        h += '<span class="font-medium text-indigo-600">' + fmt$(blockTotal) + '</span></div>';
-        h += '<div class="px-4 py-1 flex justify-between items-center text-sm bg-indigo-50">';
-        h += '<span class="text-indigo-500">Parking</span>';
-        h += '<span class="text-red-500">-' + fmt$(blockParking) + '</span></div>';
+        h += '<span class="text-indigo-600">Base Pay (' + blockHrs + 'h)</span>';
+        h += '<span class="font-medium text-indigo-600">' + fmt$(basePay) + '</span></div>';
+        if (blockOt > 0) {
+          var otHrs = blockHrs - 40 * block.weeks.length; // approximate
+          block.weeks.forEach(function(w) { if (w.ot > 0) otHrs = getWeekWorkedHours(w.days) - 40; });
+          h += '<div class="px-4 py-1 flex justify-between items-center text-sm bg-indigo-50">';
+          h += '<span class="text-orange-600">Overtime</span>';
+          h += '<span class="text-orange-600">+' + fmt$(blockOt) + '</span></div>';
+        }
+        if (blockParking > 0) {
+          h += '<div class="px-4 py-1 flex justify-between items-center text-sm bg-indigo-50">';
+          h += '<span class="text-indigo-500">Parking</span>';
+          h += '<span class="text-red-500">-' + fmt$(blockParking) + '</span></div>';
+        }
         h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-200">';
         h += '<span class="text-indigo-600 font-medium">Total Due</span>';
         h += '<span class="font-bold text-indigo-600">' + fmt$(blockNet) + '</span></div>';
       } else {
         h += '<div class="px-4 py-1.5 flex justify-between items-center text-sm bg-indigo-50 border-t border-indigo-100">';
-        h += '<span class="text-indigo-600 font-medium">Total Due</span>';
+        h += '<span class="text-indigo-600 font-medium">Total Due (' + blockHrs + 'h)</span>';
         h += '<span class="font-bold text-indigo-600">' + fmt$(blockTotal) + '</span></div>';
       }
       h += '<div class="px-4 py-2 bg-green-50 flex justify-between items-center text-sm">';
