@@ -434,10 +434,17 @@ function isAuto(catKey) { var c = CATS[catKey]; return c && c.calc === 'auto'; }
 function catLabel(key) { var c = CATS[key]; return c ? c.label : key; }
 function catColor(key) { var c = CATS[key]; return c ? c.color : 'bg-gray-100 text-gray-700'; }
 
+// Fridays >= 9/4/2026: nanny gets paid full default hours (5h) even if she leaves early
+function effectiveHours(dy) {
+  var hrs = dy.h || 0;
+  var dateStr = dy.d.substring(0, 10);
+  if (dy.c === 'regular' && dy.w === 'Fri' && dateStr >= FRIDAY_MIN_START) hrs = Math.max(hrs, DHRS.Fri || 5);
+  return hrs;
+}
 function dayTotal(dy) {
   if (!dy || dy.st === '') return 0;
   if (isAuto(dy.c)) return RATE * (DHRS[dy.w] || 8);
-  return RATE * (dy.h || 0) + (dy.a || 0);
+  return RATE * effectiveHours(dy) + (dy.a || 0);
 }
 
 function findDay(date) { return days.find(function(x) { return x.d === date; }); }
@@ -503,6 +510,7 @@ function totalParkingDeduction() {
 }
 // Check if a specific week (by its Saturday key) has parking
 var PARKING_RESUME = '2026-08-29'; // Sat of first week parking resumes (Sep)
+var FRIDAY_MIN_START = '2026-09-04'; // Fridays get paid full default hours from this date on
 function weekHasParking(satKey) {
   return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
 }
@@ -520,7 +528,7 @@ function getWeekHours(weekDays) {
     if (d.st === '') return;
     if (d.d.indexOf('-bonus') >= 0) return;
     if (isAuto(d.c)) total += (DHRS[d.w] || 0);
-    else total += (d.h || 0);
+    else total += effectiveHours(d);
   });
   return total;
 }
@@ -529,7 +537,7 @@ function getWeekWorkedHours(weekDays) {
   var total = 0;
   weekDays.forEach(function(d) {
     if (d.st === '' || d.c !== 'regular') return;
-    total += (d.h || 0);
+    total += effectiveHours(d);
   });
   return total;
 }
@@ -829,10 +837,13 @@ function renderDayCard(dy) {
   if (!isEmpty) {
     if (isAuto(dy.c)) {
       h += (DHRS[dy.w] || 8) + 'h &times; $' + RATE;
-    } else if (dy.h > 0) {
-      h += dy.h + 'h &times; $' + RATE;
-      if (addons > 0) h += ' + $' + addons;
-      else if (addons < 0) h += ' \u2013 $' + Math.abs(addons);
+    } else {
+      var effH = effectiveHours(dy);
+      if (effH > 0) {
+        h += effH + 'h &times; $' + RATE;
+        if (addons > 0) h += ' + $' + addons;
+        else if (addons < 0) h += ' \u2013 $' + Math.abs(addons);
+      }
     }
   }
   h += '</div>';
