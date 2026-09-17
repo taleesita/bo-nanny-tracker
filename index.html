@@ -514,13 +514,33 @@ var FRIDAY_MIN_START = '2026-09-04'; // Fridays get paid full default hours from
 function weekHasParking(satKey) {
   return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
 }
-// Balance = unpaid total minus parking deductions minus credits
+// Balance from first principles: total owed (all time) minus total paid
+function totalOwed() {
+  // Base pay for all non-empty days
+  var base = 0;
+  days.forEach(function(d) { if (d.st !== '') base += dayTotal(d); });
+  // OT for ALL weeks that have any non-empty days
+  var allWeeks = {};
+  days.forEach(function(d) {
+    if (d.st === '') return;
+    var dateStr = d.d.substring(0, 10);
+    var dt = new Date(dateStr + 'T12:00:00');
+    if (!isNaN(dt.getTime())) allWeeks[ds(getMon(dt))] = true;
+  });
+  var ot = 0, parking = 0;
+  Object.keys(allWeeks).forEach(function(sat) {
+    ot += weekOvertimePremium(getWeekDaysForSat(sat));
+    if (weekHasParking(sat)) parking += PARKING_WEEKLY;
+  });
+  return base + ot - parking;
+}
 function getBalance() {
-  return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
+  return totalOwed() - paidTotal();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
-// Per-week breakdown of unpaid amounts
-function getUnpaidWeekBreakdown() {
+// Per-week breakdown of all amounts owed (unpaid + underpaid)
+function getWeekBreakdown() {
+  // Unpaid weeks
   var weeks = {};
   days.forEach(function(d) {
     if (d.st !== 'unpaid') return;
@@ -528,19 +548,76 @@ function getUnpaidWeekBreakdown() {
     var dt = new Date(dateStr + 'T12:00:00');
     if (isNaN(dt.getTime())) return;
     var sat = ds(getMon(dt));
-    if (!weeks[sat]) weeks[sat] = { sat: sat, days: 0, base: 0 };
+    if (!weeks[sat]) weeks[sat] = { sat: sat, days: 0, base: 0, type: 'unpaid' };
     weeks[sat].days++;
     weeks[sat].base += dayTotal(d);
   });
+  // Paid weeks — check for underpayments
+  var paidWeeks = {};
+  days.forEach(function(d) {
+    if (d.st !== 'paid') return;
+    var dateStr = d.d.substring(0, 10);
+    var dt = new Date(dateStr + 'T12:00:00');
+    if (isNaN(dt.getTime())) return;
+    var sat = ds(getMon(dt));
+    if (!paidWeeks[sat]) paidWeeks[sat] = { sat: sat, owed: 0, paid: 0, days: 0 };
+    paidWeeks[sat].days++;
+    paidWeeks[sat].owed += dayTotal(d);
+  });
+  // Add OT and subtract parking for paid weeks, sum up payments
+  Object.keys(paidWeeks).forEach(function(sat) {
+    var pw = paidWeeks[sat];
+    var wkDays = getWeekDaysForSat(sat);
+    pw.owed += weekOvertimePremium(wkDays);
+    if (weekHasParking(sat)) pw.owed -= PARKING_WEEKLY;
+  });
+  // Sum payments per week (a payment covers days; group by their weeks)
+  pmts.forEach(function(p) {
+    var pWeeks = {};
+    days.forEach(function(d) {
+      if (d.pd === p.dt) {
+        var dateStr = d.d.substring(0, 10);
+        var dt = new Date(dateStr + 'T12:00:00');
+        if (!isNaN(dt.getTime())) {
+          var sat = ds(getMon(dt));
+          if (!pWeeks[sat]) pWeeks[sat] = 0;
+          pWeeks[sat]++;
+        }
+      }
+    });
+    // Split payment proportionally across weeks it covered
+    var totalDays = 0;
+    Object.keys(pWeeks).forEach(function(s) { totalDays += pWeeks[s]; });
+    Object.keys(pWeeks).forEach(function(sat) {
+      if (paidWeeks[sat]) {
+        paidWeeks[sat].paid += p.amt * (pWeeks[sat] / totalDays);
+      }
+    });
+  });
+  // Add underpaid weeks to result
+  Object.keys(paidWeeks).forEach(function(sat) {
+    var pw = paidWeeks[sat];
+    var shortfall = pw.owed - pw.paid;
+    if (shortfall > 0.50) { // > 50 cents to avoid float noise
+      var wkDays = getWeekDaysForSat(sat);
+      weeks[sat] = { sat: sat, days: pw.days, base: shortfall, type: 'adjustment',
+        hrs: getWeekHours(wkDays), ot: 0, parking: 0, net: shortfall };
+    }
+  });
+  // Build sorted result
   var result = [];
   Object.keys(weeks).sort().forEach(function(sat) {
     var w = weeks[sat];
-    var wkDays = getWeekDaysForSat(sat);
-    var hrs = getWeekHours(wkDays);
-    var ot = weekOvertimePremium(wkDays);
-    var parking = weekHasParking(sat) ? PARKING_WEEKLY : 0;
-    var net = w.base + ot - parking;
-    result.push({ sat: sat, days: w.days, hrs: hrs, base: w.base, ot: ot, parking: parking, net: net });
+    if (w.type === 'unpaid') {
+      var wkDays = getWeekDaysForSat(sat);
+      var hrs = getWeekHours(wkDays);
+      var ot = weekOvertimePremium(wkDays);
+      var parking = weekHasParking(sat) ? PARKING_WEEKLY : 0;
+      var net = w.base + ot - parking;
+      result.push({ sat: sat, days: w.days, hrs: hrs, base: w.base, ot: ot, parking: parking, net: net, type: 'unpaid' });
+    } else {
+      result.push(w);
+    }
   });
   return result;
 }
@@ -718,11 +795,7 @@ function renderWeek(el) {
   var weekNet = hasParking ? wt - PARKING_WEEKLY : wt;
   var allUnpaid = unpaidDays();
   var bal = getBalance();
-  var credit = getCredits();
-  var rawTotal = unpaidTotal();
-  var otTotal = unpaidOvertimePremium();
-  var parkingDed = totalParkingDeduction();
-  var showPayment = allUnpaid.length > 0 || bal > 0;
+  var showPayment = allUnpaid.length > 0 || bal > 0.50;
 
   if (weekUnpaid.length === 0 && weekHrs > 0) {
     // This week is paid — show full breakdown with diagonal PAID stamp
@@ -750,39 +823,48 @@ function renderWeek(el) {
   }
 
   if (showPayment) {
-    var wkBreakdown = getUnpaidWeekBreakdown();
+    var wkBreakdown = getWeekBreakdown();
+    // Helper to render a week row
+    function renderWeekRow(wk, idx) {
+      var rowId = 'wkrow-' + idx;
+      var isCur = (wk.sat === curSat);
+      var isAdj = (wk.type === 'adjustment');
+      var borderCls = isAdj ? 'border-amber-200' : 'border-green-100';
+      var bgCls = isAdj ? 'bg-amber-50' : 'bg-white';
+      var r = '<div class="' + bgCls + ' rounded-lg border ' + borderCls + ' overflow-hidden">';
+      r += '<div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50" onclick="var el=document.getElementById(\'' + rowId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">';
+      r += '<div class="flex items-center gap-2 text-sm">';
+      r += '<span class="text-gray-400 text-xs">&#9654;</span>';
+      r += '<span class="' + (isAdj ? 'text-amber-800' : 'text-green-800') + (isCur ? ' font-semibold' : '') + '">' + fmtWeekRange(wk.sat) + '</span>';
+      if (isAdj) {
+        r += '<span class="text-xs text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">Adjustment</span>';
+      } else {
+        r += '<span class="text-gray-400 text-xs">' + wk.days + 'd · ' + wk.hrs + 'h</span>';
+        if (wk.ot > 0) r += '<span class="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">OT</span>';
+      }
+      r += '</div>';
+      r += '<span class="text-sm font-semibold ' + (isAdj ? 'text-amber-700' : 'text-green-700') + '">+' + fmt$(wk.net) + '</span>';
+      r += '</div>';
+      // Expandable detail
+      r += '<div id="' + rowId + '" style="display:none" class="px-3 pb-2 text-xs border-t ' + borderCls + ' pt-2">';
+      if (isAdj) {
+        r += '<div class="text-amber-800">Underpayment from paid week: ' + fmt$(wk.net) + '</div>';
+      } else {
+        r += '<div class="text-green-800">' + wk.days + ' day(s) base: ' + fmt$(wk.base) + '</div>';
+        if (wk.ot > 0) r += '<div class="text-orange-600 mt-1">Overtime: +' + fmt$(wk.ot) + '</div>';
+        if (wk.parking > 0) r += '<div class="text-green-600 mt-1">Parking: -' + fmt$(wk.parking) + '</div>';
+        r += '<div class="mt-1 font-semibold text-green-800">Week net: ' + fmt$(wk.net) + '</div>';
+      }
+      r += '</div>';
+      r += '</div>';
+      return r;
+    }
     if (weekUnpaid.length > 0) {
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
-      // Per-week expandable rows
       if (wkBreakdown.length > 0) {
         h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
-        wkBreakdown.forEach(function(wk, idx) {
-          var rowId = 'wkrow-' + idx;
-          var isCur = (wk.sat === curSat);
-          h += '<div class="bg-white rounded-lg border border-green-100 overflow-hidden">';
-          h += '<div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50" onclick="var el=document.getElementById(\'' + rowId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">';
-          h += '<div class="flex items-center gap-2 text-sm">';
-          h += '<span class="text-gray-400 text-xs" style="transition:transform 0.15s" id="' + rowId + '-chev">&#9654;</span>';
-          h += '<span class="text-green-800' + (isCur ? ' font-semibold' : '') + '">' + fmtWeekRange(wk.sat) + '</span>';
-          h += '<span class="text-gray-400 text-xs">' + wk.days + 'd · ' + wk.hrs + 'h</span>';
-          if (wk.ot > 0) h += '<span class="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">OT</span>';
-          h += '</div>';
-          h += '<span class="text-sm font-semibold text-green-700">' + fmt$(wk.net) + '</span>';
-          h += '</div>';
-          // Expandable detail
-          h += '<div id="' + rowId + '" style="display:none" class="px-3 pb-2 text-xs border-t border-green-100 pt-2">';
-          h += '<div class="text-green-800">' + wk.days + ' day(s) base: ' + fmt$(wk.base) + '</div>';
-          if (wk.ot > 0) h += '<div class="text-orange-600 mt-1">Overtime: +' + fmt$(wk.ot) + '</div>';
-          if (wk.parking > 0) h += '<div class="text-green-600 mt-1">Parking: -' + fmt$(wk.parking) + '</div>';
-          h += '<div class="mt-1 font-semibold text-green-800">Week net: ' + fmt$(wk.net) + '</div>';
-          h += '</div>';
-          h += '</div>';
-        });
+        wkBreakdown.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
         h += '</div>';
-      }
-      // Credit line if any
-      if (credit > 0) {
-        h += '<div class="text-sm text-green-600 mb-2">Credit: -' + fmt$(credit) + '</div>';
       }
       // Grand total + pay button
       h += '<div class="pt-3 border-t border-green-300 flex items-center justify-between flex-wrap gap-2">';
@@ -792,32 +874,13 @@ function renderWeek(el) {
     } else {
       // Viewing a paid/empty week — compact balance with expandable week detail
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
-      if (wkBreakdown.length > 1) {
+      if (wkBreakdown.length > 0) {
         h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
-        wkBreakdown.forEach(function(wk, idx) {
-          var rowId = 'wkrow-' + idx;
-          h += '<div class="bg-white rounded-lg border border-green-100 overflow-hidden">';
-          h += '<div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50" onclick="var el=document.getElementById(\'' + rowId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">';
-          h += '<div class="flex items-center gap-2 text-sm">';
-          h += '<span class="text-gray-400 text-xs">&#9654;</span>';
-          h += '<span class="text-green-800">' + fmtWeekRange(wk.sat) + '</span>';
-          h += '<span class="text-gray-400 text-xs">' + wk.days + 'd · ' + wk.hrs + 'h</span>';
-          if (wk.ot > 0) h += '<span class="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">OT</span>';
-          h += '</div>';
-          h += '<span class="text-sm font-semibold text-green-700">' + fmt$(wk.net) + '</span>';
-          h += '</div>';
-          h += '<div id="' + rowId + '" style="display:none" class="px-3 pb-2 text-xs border-t border-green-100 pt-2">';
-          h += '<div class="text-green-800">' + wk.days + ' day(s) base: ' + fmt$(wk.base) + '</div>';
-          if (wk.ot > 0) h += '<div class="text-orange-600 mt-1">Overtime: +' + fmt$(wk.ot) + '</div>';
-          if (wk.parking > 0) h += '<div class="text-green-600 mt-1">Parking: -' + fmt$(wk.parking) + '</div>';
-          h += '<div class="mt-1 font-semibold text-green-800">Week net: ' + fmt$(wk.net) + '</div>';
-          h += '</div>';
-          h += '</div>';
-        });
+        wkBreakdown.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
         h += '</div>';
       }
       h += '<div class="flex items-center justify-between">';
-      h += '<span class="text-sm text-green-700">Balance due (other weeks): <span class="font-bold text-green-800">' + fmt$(bal) + '</span></span>';
+      h += '<span class="text-sm text-green-700">Balance due: <span class="font-bold text-green-800">' + fmt$(bal) + '</span></span>';
       h += '<button onclick="goToday()" class="px-3 py-1.5 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700">Go to unpaid week</button>';
       h += '</div>';
     }
