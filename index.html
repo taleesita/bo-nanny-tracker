@@ -519,6 +519,31 @@ function getBalance() {
   return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
+// Per-week breakdown of unpaid amounts
+function getUnpaidWeekBreakdown() {
+  var weeks = {};
+  days.forEach(function(d) {
+    if (d.st !== 'unpaid') return;
+    var dateStr = d.d.substring(0, 10);
+    var dt = new Date(dateStr + 'T12:00:00');
+    if (isNaN(dt.getTime())) return;
+    var sat = ds(getMon(dt));
+    if (!weeks[sat]) weeks[sat] = { sat: sat, days: 0, base: 0 };
+    weeks[sat].days++;
+    weeks[sat].base += dayTotal(d);
+  });
+  var result = [];
+  Object.keys(weeks).sort().forEach(function(sat) {
+    var w = weeks[sat];
+    var wkDays = getWeekDaysForSat(sat);
+    var hrs = getWeekHours(wkDays);
+    var ot = weekOvertimePremium(wkDays);
+    var parking = weekHasParking(sat) ? PARKING_WEEKLY : 0;
+    var net = w.base + ot - parking;
+    result.push({ sat: sat, days: w.days, hrs: hrs, base: w.base, ot: ot, parking: parking, net: net });
+  });
+  return result;
+}
 
 // ====== OVERTIME ======
 // Total hours for a week (for display)
@@ -725,43 +750,72 @@ function renderWeek(el) {
   }
 
   if (showPayment) {
-    // Full breakdown only when viewing a week with unpaid days; otherwise compact
+    var wkBreakdown = getUnpaidWeekBreakdown();
     if (weekUnpaid.length > 0) {
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
-      h += '<div class="flex items-center justify-between flex-wrap gap-2">';
-      h += '<div>';
-      if (weekHrs > 0) {
-        h += '<div class="text-sm text-green-700 mb-1"><span class="font-semibold">' + weekHrs + 'h</span> this week';
-        if (otPremium > 0) h += ' · <span class="text-orange-600">' + (getWeekWorkedHours(wkDays) - 40) + 'h overtime</span>';
+      // Per-week expandable rows
+      if (wkBreakdown.length > 0) {
+        h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
+        wkBreakdown.forEach(function(wk, idx) {
+          var rowId = 'wkrow-' + idx;
+          var isCur = (wk.sat === curSat);
+          h += '<div class="bg-white rounded-lg border border-green-100 overflow-hidden">';
+          h += '<div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50" onclick="var el=document.getElementById(\'' + rowId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">';
+          h += '<div class="flex items-center gap-2 text-sm">';
+          h += '<span class="text-gray-400 text-xs" style="transition:transform 0.15s" id="' + rowId + '-chev">&#9654;</span>';
+          h += '<span class="text-green-800' + (isCur ? ' font-semibold' : '') + '">' + fmtWeekRange(wk.sat) + '</span>';
+          h += '<span class="text-gray-400 text-xs">' + wk.days + 'd · ' + wk.hrs + 'h</span>';
+          if (wk.ot > 0) h += '<span class="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">OT</span>';
+          h += '</div>';
+          h += '<span class="text-sm font-semibold text-green-700">' + fmt$(wk.net) + '</span>';
+          h += '</div>';
+          // Expandable detail
+          h += '<div id="' + rowId + '" style="display:none" class="px-3 pb-2 text-xs border-t border-green-100 pt-2">';
+          h += '<div class="text-green-800">' + wk.days + ' day(s) base: ' + fmt$(wk.base) + '</div>';
+          if (wk.ot > 0) h += '<div class="text-orange-600 mt-1">Overtime: +' + fmt$(wk.ot) + '</div>';
+          if (wk.parking > 0) h += '<div class="text-green-600 mt-1">Parking: -' + fmt$(wk.parking) + '</div>';
+          h += '<div class="mt-1 font-semibold text-green-800">Week net: ' + fmt$(wk.net) + '</div>';
+          h += '</div>';
+          h += '</div>';
+        });
         h += '</div>';
       }
-      var hasAdjustments = (credit > 0 || parkingDed > 0 || otTotal > 0);
-      if (allUnpaid.length > 0 && hasAdjustments) {
-        var running = rawTotal;
-        h += '<span class="text-green-800">' + allUnpaid.length + ' unpaid day(s) · ' + fmt$(rawTotal) + '</span>';
-        if (otTotal > 0) {
-          running += otTotal;
-          h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime: +' + fmt$(otTotal) + ' = ' + fmt$(running) + '</span></div>';
-        }
-        if (parkingDed > 0) {
-          running -= parkingDed;
-          h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(parkingDed) + ' = ' + fmt$(running) + '</span></div>';
-        }
-        if (credit > 0) {
-          running -= credit;
-          h += '<div class="mt-1"><span class="text-sm text-green-600">Credit: -' + fmt$(credit) + ' = ' + fmt$(running) + '</span></div>';
-        }
-        h += '<div class="mt-2 pt-2 border-t border-green-300"><span class="font-bold text-xl text-green-800">Total Due: ' + fmt$(bal) + '</span></div>';
-      } else if (allUnpaid.length > 0) {
-        h += '<span class="font-medium text-green-800">' + allUnpaid.length + ' unpaid day(s)</span>';
-        h += ' <span class="text-green-700 font-bold text-lg">' + fmt$(rawTotal + otTotal) + '</span>';
+      // Credit line if any
+      if (credit > 0) {
+        h += '<div class="text-sm text-green-600 mb-2">Credit: -' + fmt$(credit) + '</div>';
       }
-      h += '</div>';
+      // Grand total + pay button
+      h += '<div class="pt-3 border-t border-green-300 flex items-center justify-between flex-wrap gap-2">';
+      h += '<span class="font-bold text-xl text-green-800">Total Due: ' + fmt$(bal) + '</span>';
       h += '<button onclick="togglePayWeek()" class="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Make a Payment</button>';
       h += '</div>';
     } else {
-      // Viewing a paid/empty week — just show compact balance reminder
-      h += '<div class="bg-green-50 rounded-lg px-4 py-2.5 mb-4 border border-green-200">';
+      // Viewing a paid/empty week — compact balance with expandable week detail
+      h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
+      if (wkBreakdown.length > 1) {
+        h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
+        wkBreakdown.forEach(function(wk, idx) {
+          var rowId = 'wkrow-' + idx;
+          h += '<div class="bg-white rounded-lg border border-green-100 overflow-hidden">';
+          h += '<div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-green-50" onclick="var el=document.getElementById(\'' + rowId + '\');el.style.display=el.style.display===\'none\'?\'block\':\'none\'">';
+          h += '<div class="flex items-center gap-2 text-sm">';
+          h += '<span class="text-gray-400 text-xs">&#9654;</span>';
+          h += '<span class="text-green-800">' + fmtWeekRange(wk.sat) + '</span>';
+          h += '<span class="text-gray-400 text-xs">' + wk.days + 'd · ' + wk.hrs + 'h</span>';
+          if (wk.ot > 0) h += '<span class="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">OT</span>';
+          h += '</div>';
+          h += '<span class="text-sm font-semibold text-green-700">' + fmt$(wk.net) + '</span>';
+          h += '</div>';
+          h += '<div id="' + rowId + '" style="display:none" class="px-3 pb-2 text-xs border-t border-green-100 pt-2">';
+          h += '<div class="text-green-800">' + wk.days + ' day(s) base: ' + fmt$(wk.base) + '</div>';
+          if (wk.ot > 0) h += '<div class="text-orange-600 mt-1">Overtime: +' + fmt$(wk.ot) + '</div>';
+          if (wk.parking > 0) h += '<div class="text-green-600 mt-1">Parking: -' + fmt$(wk.parking) + '</div>';
+          h += '<div class="mt-1 font-semibold text-green-800">Week net: ' + fmt$(wk.net) + '</div>';
+          h += '</div>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
       h += '<div class="flex items-center justify-between">';
       h += '<span class="text-sm text-green-700">Balance due (other weeks): <span class="font-bold text-green-800">' + fmt$(bal) + '</span></span>';
       h += '<button onclick="goToday()" class="px-3 py-1.5 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700">Go to unpaid week</button>';
