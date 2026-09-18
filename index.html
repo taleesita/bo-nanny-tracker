@@ -680,6 +680,19 @@ function getBalance() {
   return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
+// Total Friday adjustment amount from paid weeks (shortfall that's absorbed into credits)
+function fridayAdjustmentTotal() {
+  var adj = 0;
+  days.forEach(function(d) {
+    if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
+    var dateStr = d.d.substring(0, 10);
+    if (dateStr < FRIDAY_MIN_START) return;
+    var effH = effectiveHours(d);
+    var actualH = d.h || 0;
+    if (effH > actualH) adj += (effH - actualH) * RATE;
+  });
+  return adj;
+}
 // Per-week breakdown of all amounts owed (unpaid + underpaid)
 function getWeekBreakdown() {
   // Unpaid weeks
@@ -694,24 +707,22 @@ function getWeekBreakdown() {
     weeks[sat].days++;
     weeks[sat].base += dayTotal(d);
   });
-  // Friday adjustment — only show if credits are still negative (underpayment not yet settled)
-  if (getCredits() < -0.50) {
-    days.forEach(function(d) {
-      if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
-      var dateStr = d.d.substring(0, 10);
-      if (dateStr < FRIDAY_MIN_START) return;
-      var effH = effectiveHours(d);
-      var actualH = d.h || 0;
-      if (effH > actualH) {
-        var adj = (effH - actualH) * RATE;
-        var sat = ds(getMon(new Date(dateStr + 'T12:00:00')));
-        if (!weeks[sat]) {
-          weeks[sat] = { sat: sat, days: 0, base: adj, type: 'adjustment',
-            hrs: 0, ot: 0, parking: 0, net: adj, detail: 'Fri ' + fmtShort(dateStr) + ': paid ' + actualH + 'h but owed ' + effH + 'h — ' + (effH - actualH) + 'h shortfall × $' + RATE + ' = ' + fmt$(adj) };
-        }
+  // Friday adjustment — show for any paid Friday >= FRIDAY_MIN_START with shortfall
+  days.forEach(function(d) {
+    if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
+    var dateStr = d.d.substring(0, 10);
+    if (dateStr < FRIDAY_MIN_START) return;
+    var effH = effectiveHours(d);
+    var actualH = d.h || 0;
+    if (effH > actualH) {
+      var adj = (effH - actualH) * RATE;
+      var sat = ds(getMon(new Date(dateStr + 'T12:00:00')));
+      if (!weeks[sat]) {
+        weeks[sat] = { sat: sat, days: 0, base: adj, type: 'adjustment',
+          hrs: 0, ot: 0, parking: 0, net: adj, detail: 'Fri ' + fmtShort(dateStr) + ': paid ' + actualH + 'h but owed ' + effH + 'h — ' + (effH - actualH) + 'h shortfall × $' + RATE + ' = ' + fmt$(adj) };
       }
-    });
-  }
+    }
+  });
   // Build sorted result
   var result = [];
   Object.keys(weeks).sort().forEach(function(sat) {
@@ -972,6 +983,25 @@ function renderWeek(el) {
       if (wkBreakdown.length > 0) {
         h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
         wkBreakdown.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
+        // Show prior payment credit row if there's a net credit from past payments
+        // rawCredit = getCredits() + fridayAdj so that: weekRows + adjRow - rawCredit = balance
+        var friAdj = fridayAdjustmentTotal();
+        var netCredits = getCredits();
+        var rawCredit = netCredits + friAdj; // overpayment before Friday adj reduced it
+        if (rawCredit > 0.50) {
+          h += '<div class="bg-blue-50 rounded-lg border border-blue-100 overflow-hidden">';
+          h += '<div class="px-3 py-2 flex items-center justify-between text-sm">';
+          h += '<span class="text-blue-700">Prior payment credit</span>';
+          h += '<span class="font-semibold text-blue-700">-' + fmt$(rawCredit) + '</span>';
+          h += '</div></div>';
+        } else if (netCredits < -0.50 && friAdj < 0.50) {
+          // Net underpayment with no Friday adjustment to explain it
+          h += '<div class="bg-red-50 rounded-lg border border-red-100 overflow-hidden">';
+          h += '<div class="px-3 py-2 flex items-center justify-between text-sm">';
+          h += '<span class="text-red-700">Prior underpayment</span>';
+          h += '<span class="font-semibold text-red-700">+' + fmt$(Math.abs(netCredits)) + '</span>';
+          h += '</div></div>';
+        }
         h += '</div>';
       }
       // Grand total + pay button
