@@ -626,10 +626,12 @@ function unpaidTotal() { var t = 0; days.forEach(function(d) { if (d.st === 'unp
 function paidTotal() { var t = 0; pmts.forEach(function(p) { t += p.amt; }); return t; }
 // Calculate running credit: overpayments >= $100 add credit (rounded to $100),
 // underpayments consume credit. Processed chronologically.
+var CREDIT_CUTOFF = '2026-08-31'; // ignore over/underpayments from payments before this date
 function getCredits() {
   var credit = 0;
   var sorted = pmts.slice().sort(function(a, b) { return a.dt.localeCompare(b.dt); });
   sorted.forEach(function(p) {
+    if (p.dt < CREDIT_CUTOFF) return; // old payments are settled, ignore
     var covered = 0;
     var pWeeks = {}; // track distinct weeks in this payment for parking
     days.forEach(function(d) {
@@ -646,7 +648,7 @@ function getCredits() {
     var parkingDed = Object.keys(pWeeks).length * PARKING_WEEKLY;
     var owed = covered - parkingDed;
     var diff = p.amt - owed;
-    credit += diff; // exact tracking: overpayments are credit, underpayments are debt
+    credit += diff;
   });
   return credit;
 }
@@ -674,10 +676,9 @@ var FRIDAY_MIN_START = '2026-09-04'; // Fridays get paid full default hours from
 function weekHasParking(satKey) {
   return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
 }
-// Balance = unpaid total + unpaid OT - parking - credits
-// Credits track exact over/underpayments (including retroactive Friday adjustments)
+// Balance = unpaid weeks + Friday shortfall from paid weeks + OT - parking - credits (from 8/31+)
 function getBalance() {
-  return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
+  return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() + fridayAdjustmentTotal() - getCredits();
 }
 function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
 // Total Friday adjustment amount from paid weeks (shortfall that's absorbed into credits)
@@ -981,27 +982,10 @@ function renderWeek(el) {
     if (weekUnpaid.length > 0) {
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
       if (wkBreakdown.length > 0) {
+        // Only show unpaid week rows (not adjustment rows — those go in the note)
+        var unpaidRows = wkBreakdown.filter(function(wk) { return wk.type === 'unpaid'; });
         h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
-        wkBreakdown.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
-        // Show prior payment credit row if there's a net credit from past payments
-        // rawCredit = getCredits() + fridayAdj so that: weekRows + adjRow - rawCredit = balance
-        var friAdj = fridayAdjustmentTotal();
-        var netCredits = getCredits();
-        var rawCredit = netCredits + friAdj; // overpayment before Friday adj reduced it
-        if (rawCredit > 0.50) {
-          h += '<div class="bg-blue-50 rounded-lg border border-blue-100 overflow-hidden">';
-          h += '<div class="px-3 py-2 flex items-center justify-between text-sm">';
-          h += '<span class="text-blue-700">Prior payment credit</span>';
-          h += '<span class="font-semibold text-blue-700">-' + fmt$(rawCredit) + '</span>';
-          h += '</div></div>';
-        } else if (netCredits < -0.50 && friAdj < 0.50) {
-          // Net underpayment with no Friday adjustment to explain it
-          h += '<div class="bg-red-50 rounded-lg border border-red-100 overflow-hidden">';
-          h += '<div class="px-3 py-2 flex items-center justify-between text-sm">';
-          h += '<span class="text-red-700">Prior underpayment</span>';
-          h += '<span class="font-semibold text-red-700">+' + fmt$(Math.abs(netCredits)) + '</span>';
-          h += '</div></div>';
-        }
+        unpaidRows.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
         h += '</div>';
       }
       // Grand total + pay button
@@ -1009,6 +993,16 @@ function renderWeek(el) {
       h += '<span class="font-bold text-xl text-green-800">Total Due: ' + fmt$(bal) + '</span>';
       h += '<button onclick="togglePayWeek()" class="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Make a Payment</button>';
       h += '</div>';
+      // Compact adjustment note — show Friday shortfall and/or credit info
+      var friAdj = fridayAdjustmentTotal();
+      var netCredits = getCredits();
+      var notes = [];
+      if (friAdj > 0.50) notes.push('+' + fmt$(friAdj) + ' Fri shortfall');
+      if (netCredits > 0.50) notes.push('-' + fmt$(netCredits) + ' prior overpayment');
+      else if (netCredits < -0.50) notes.push('+' + fmt$(Math.abs(netCredits)) + ' prior underpayment');
+      if (notes.length > 0) {
+        h += '<div class="text-xs text-gray-500 mt-1">Includes: ' + notes.join(' · ') + '</div>';
+      }
     } else {
       // Viewing a paid/empty week — compact balance with expandable week detail
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
