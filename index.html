@@ -982,10 +982,8 @@ function renderWeek(el) {
     if (weekUnpaid.length > 0) {
       h += '<div class="bg-green-50 rounded-lg p-4 mb-4 border border-green-200">';
       if (wkBreakdown.length > 0) {
-        // Only show unpaid week rows (not adjustment rows — those go in the note)
-        var unpaidRows = wkBreakdown.filter(function(wk) { return wk.type === 'unpaid'; });
         h += '<div class="mb-3" style="display:flex;flex-direction:column;gap:4px">';
-        unpaidRows.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
+        wkBreakdown.forEach(function(wk, idx) { h += renderWeekRow(wk, idx); });
         h += '</div>';
       }
       // Grand total + pay button
