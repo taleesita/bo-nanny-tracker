@@ -567,7 +567,7 @@ function getWeekBreakdown() {
       var sat = ds(getMon(new Date(dateStr + 'T12:00:00')));
       if (!weeks[sat]) {
         weeks[sat] = { sat: sat, days: 0, base: adj, type: 'adjustment',
-          hrs: 0, ot: 0, parking: 0, net: adj, detail: 'Fri ' + fmtShort(dateStr) + ': ' + actualH + 'h worked, paid for ' + effH + 'h' };
+          hrs: 0, ot: 0, parking: 0, net: adj, detail: 'Fri ' + fmtShort(dateStr) + ': paid ' + actualH + 'h but owed ' + effH + 'h — ' + (effH - actualH) + 'h shortfall × $' + RATE + ' = ' + fmt$(adj) };
       }
     }
   });
