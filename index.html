@@ -626,32 +626,8 @@ function unpaidTotal() { var t = 0; days.forEach(function(d) { if (d.st === 'unp
 function paidTotal() { var t = 0; pmts.forEach(function(p) { t += p.amt; }); return t; }
 // Calculate running credit: overpayments >= $100 add credit (rounded to $100),
 // underpayments consume credit. Processed chronologically.
-var CREDIT_CUTOFF = '2026-08-31'; // ignore old payment roundups, only track 8/31+ payments
-function getCredits() {
-  var credit = 0;
-  var sorted = pmts.slice().sort(function(a, b) { return a.dt.localeCompare(b.dt); });
-  sorted.forEach(function(p) {
-    if (p.dt < CREDIT_CUTOFF) return; // old payments are settled, ignore
-    var covered = 0;
-    var pWeeks = {}; // track distinct weeks in this payment for parking
-    days.forEach(function(d) {
-      if (d.pd === p.dt) {
-        covered += dayTotal(d);
-        var dateStr = d.d.substring(0, 10);
-        var dt = new Date(dateStr + 'T12:00:00');
-        if (!isNaN(dt.getTime())) {
-          var sat = ds(getMon(dt));
-          if (weekHasParking(sat)) pWeeks[sat] = true;
-        }
-      }
-    });
-    var parkingDed = Object.keys(pWeeks).length * PARKING_WEEKLY;
-    var owed = covered - parkingDed;
-    var diff = p.amt - owed;
-    credit += diff;
-  });
-  return credit;
-}
+var CREDIT_CUTOFF = '2026-08-31'; // payments before this are locked/settled
+function getCredits() { return 0; } // credits disabled — balance is just unpaid + Friday adj
 // Count distinct unpaid weeks eligible for parking deduction
 function unpaidParkingWeeks() {
   var weeks = {};
@@ -676,13 +652,26 @@ var FRIDAY_MIN_START = '2026-09-04'; // Fridays get paid full default hours from
 function weekHasParking(satKey) {
   return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
 }
-// Balance = unpaid total + OT - parking - credits
-// The Friday bump flows through dayTotal() → unpaidTotal (if unpaid) or getCredits (if paid)
-function getBalance() {
-  return unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() - getCredits();
+// Outstanding Friday shortfall from old payments — returns 0 once a newer payment covers it
+function fridayAdjustmentOutstanding() {
+  var adj = 0;
+  days.forEach(function(d) {
+    if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
+    var dateStr = d.d.substring(0, 10);
+    if (dateStr < FRIDAY_MIN_START) return;
+    var effH = effectiveHours(d);
+    var actualH = d.h || 0;
+    if (effH <= actualH) return;
+    // If any payment from cutoff onward was made on/after this Friday, it's settled
+    var settled = pmts.some(function(p) {
+      return p.dt >= CREDIT_CUTOFF && p.dt >= dateStr;
+    });
+    if (settled) return;
+    adj += (effH - actualH) * RATE;
+  });
+  return adj;
 }
-function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
-// Total Friday adjustment amount from paid weeks (shortfall that's absorbed into credits)
+// Raw Friday shortfall total (for display, ignoring settlement)
 function fridayAdjustmentTotal() {
   var adj = 0;
   days.forEach(function(d) {
@@ -695,6 +684,53 @@ function fridayAdjustmentTotal() {
   });
   return adj;
 }
+// Balance = unpaid work + Friday shortfall from old payments - overpayments
+function getBalance() {
+  var base = unpaidTotal() + unpaidOvertimePremium() - totalParkingDeduction() + fridayAdjustmentOutstanding();
+  if (base <= 0.50) {
+    // All current obligations settled — check for overpayment
+    var overpay = getOverpayment();
+    if (overpay > 0.50) return -overpay;
+    return 0;
+  }
+  return base;
+}
+// Check if total paid from cutoff exceeds total owed (genuine overpayment)
+function getOverpayment() {
+  var totalPaid = 0;
+  pmts.forEach(function(p) { if (p.dt >= CREDIT_CUTOFF) totalPaid += p.amt; });
+  if (totalPaid === 0) return 0;
+  // Total work value for days covered by cutoff+ payments
+  var totalOwed = 0;
+  var weeksSeen = {};
+  days.forEach(function(d) {
+    if (!d.pd || d.pd < CREDIT_CUTOFF) return;
+    totalOwed += dayTotal(d);
+    var dateStr = d.d.substring(0, 10);
+    var dt2 = new Date(dateStr + 'T12:00:00');
+    if (!isNaN(dt2.getTime())) { var sat = ds(getMon(dt2)); weeksSeen[sat] = true; }
+  });
+  Object.keys(weeksSeen).forEach(function(sat) {
+    totalOwed += weekOvertimePremium(getWeekDaysForSat(sat));
+    if (weekHasParking(sat)) totalOwed -= PARKING_WEEKLY;
+  });
+  // Add settled Friday adjustments ONLY for Fridays paid by old payments (pd < cutoff)
+  // If pd >= cutoff, the Friday's bumped dayTotal is already in totalOwed from the loop above
+  days.forEach(function(d) {
+    if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
+    if (d.pd && d.pd >= CREDIT_CUTOFF) return; // already in totalOwed
+    var dateStr = d.d.substring(0, 10);
+    if (dateStr < FRIDAY_MIN_START) return;
+    var effH = effectiveHours(d);
+    var actualH = d.h || 0;
+    if (effH <= actualH) return;
+    var settled = pmts.some(function(p) { return p.dt >= CREDIT_CUTOFF && p.dt >= dateStr; });
+    if (settled) totalOwed += (effH - actualH) * RATE;
+  });
+  var diff = totalPaid - totalOwed;
+  return diff > 10 ? diff : 0;
+}
+function unpaidDays() { return days.filter(function(d) { return d.st === 'unpaid'; }); }
 // Per-week breakdown of all amounts owed (unpaid + underpaid)
 function getWeekBreakdown() {
   // Unpaid weeks
@@ -709,7 +745,7 @@ function getWeekBreakdown() {
     weeks[sat].days++;
     weeks[sat].base += dayTotal(d);
   });
-  // Friday adjustment — show for any paid Friday >= FRIDAY_MIN_START with shortfall
+  // Friday adjustment — only show if NOT yet settled by a post-cutoff payment
   days.forEach(function(d) {
     if (d.st !== 'paid' || d.c !== 'regular' || d.w !== 'Fri') return;
     var dateStr = d.d.substring(0, 10);
@@ -717,6 +753,9 @@ function getWeekBreakdown() {
     var effH = effectiveHours(d);
     var actualH = d.h || 0;
     if (effH > actualH) {
+      // Check if settled (same logic as fridayAdjustmentOutstanding)
+      var settled = pmts.some(function(p) { return p.dt >= CREDIT_CUTOFF && p.dt >= dateStr; });
+      if (settled) return;
       var adj = (effH - actualH) * RATE;
       var sat = ds(getMon(new Date(dateStr + 'T12:00:00')));
       if (!weeks[sat]) {
