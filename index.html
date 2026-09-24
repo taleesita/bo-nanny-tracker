@@ -1484,9 +1484,15 @@ function confirmPayment() {
   var dt = document.getElementById('pwDate').value;
   var amt = parseFloat(document.getElementById('pwAmt').value) || 0;
   if (!dt) { alert('Enter a payment date'); return; }
-  // Only mark unpaid days on or before the payment date
+  // Mark unpaid days through end of the payment date's week (Sat-Fri)
+  var payDt = new Date(dt + 'T12:00:00');
+  var dow = payDt.getDay(); // 0=Sun...6=Sat
+  var daysToFri = dow === 6 ? 6 : (5 - dow + 7) % 7; // days until Friday
+  var endOfWeek = new Date(payDt);
+  endOfWeek.setDate(endOfWeek.getDate() + daysToFri);
+  var cutoff = ds(endOfWeek);
   days.forEach(function(dy) {
-    if (dy.st === 'unpaid' && dy.d.substring(0, 10) <= dt) { dy.st = 'paid'; dy.pd = dt; }
+    if (dy.st === 'unpaid' && dy.d.substring(0, 10) <= cutoff) { dy.st = 'paid'; dy.pd = dt; }
   });
   if (amt > 0) pmts.push({id: 'p' + (pmts.length + 1), dt: dt, amt: amt});
   payingWeek = false; render();
