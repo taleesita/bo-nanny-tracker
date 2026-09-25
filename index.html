@@ -319,7 +319,8 @@ function startRealtimeSync() {
 
 // ====== CONFIG ======
 var RATE = 30, TOLL = 12, OVERTIME_RATE = 45;
-var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50, deducted weekly
+var PARKING_MONTHLY = 175, PARKING_WEEKLY = PARKING_MONTHLY / 4; // $350/mo split 50/50
+var PARKING_MONTHLY_START = '2026-10-01'; // From Oct: deduct $175 once on 1st parking week of month
 var PARKING_START = '2026-06-06'; // Sat start of first week with parking deduction
 var PARKING_END = '2026-08-01'; // Sat of first week WITHOUT parking (no parking in Aug)
 var RECONSTRUCTED_START = '2026-04-11';
@@ -644,13 +645,40 @@ function unpaidParkingWeeks() {
   return Object.keys(weeks).length;
 }
 function totalParkingDeduction() {
-  return unpaidParkingWeeks() * PARKING_WEEKLY;
+  var total = 0;
+  var weeks = {};
+  days.forEach(function(d) {
+    if (d.st === 'unpaid') {
+      var dateStr = d.d.substring(0, 10);
+      var dt = new Date(dateStr + 'T12:00:00');
+      if (!isNaN(dt.getTime())) {
+        var sat = ds(getMon(dt));
+        if (!weeks[sat]) { weeks[sat] = true; total += weekParkingAmount(sat); }
+      }
+    }
+  });
+  return total;
 }
 // Check if a specific week (by its Saturday key) has parking
 var PARKING_RESUME = '2026-08-29'; // Sat of first week parking resumes (Sep)
 var FRIDAY_MIN_START = '2026-09-04'; // Fridays get paid full default hours from this date on
 function weekHasParking(satKey) {
   return (satKey >= PARKING_START && satKey < PARKING_END) || satKey >= PARKING_RESUME;
+}
+// How much parking to deduct for this week
+function weekParkingAmount(satKey) {
+  if (!weekHasParking(satKey)) return 0;
+  var sat = new Date(satKey + 'T12:00:00');
+  // Before PARKING_MONTHLY_START: weekly deduction
+  if (satKey < PARKING_MONTHLY_START) return PARKING_WEEKLY;
+  // Monthly: deduct full amount on first parking week of the month only
+  var month = sat.getMonth(), year = sat.getFullYear();
+  var d = new Date(year, month, 1, 12);
+  while (d < sat) {
+    if (d.getDay() === 6 && weekHasParking(ds(d))) return 0; // earlier Sat this month has parking
+    d.setDate(d.getDate() + 1);
+  }
+  return PARKING_MONTHLY;
 }
 // Outstanding Friday shortfall from old payments — returns 0 once a newer payment covers it
 function fridayAdjustmentOutstanding() {
@@ -712,7 +740,7 @@ function getOverpayment() {
   });
   Object.keys(weeksSeen).forEach(function(sat) {
     totalOwed += weekOvertimePremium(getWeekDaysForSat(sat));
-    if (weekHasParking(sat)) totalOwed -= PARKING_WEEKLY;
+    totalOwed -= weekParkingAmount(sat);
   });
   // Add settled Friday adjustments ONLY for Fridays paid by old payments (pd < cutoff)
   // If pd >= cutoff, the Friday's bumped dayTotal is already in totalOwed from the loop above
@@ -772,7 +800,7 @@ function getWeekBreakdown() {
       var wkDays = getWeekDaysForSat(sat);
       var hrs = getWeekHours(wkDays);
       var ot = weekOvertimePremium(wkDays);
-      var parking = weekHasParking(sat) ? PARKING_WEEKLY : 0;
+      var parking = weekParkingAmount(sat);
       var net = w.base + ot - parking;
       result.push({ sat: sat, days: w.days, hrs: hrs, base: w.base, ot: ot, parking: parking, net: net, type: 'unpaid' });
     } else {
@@ -951,8 +979,9 @@ function renderWeek(el) {
 
   // Week total + Payment (consolidated when this week has unpaid days)
   var curSat = ds(curWeek);
-  var hasParking = weekHasParking(curSat);
-  var weekNet = hasParking ? wt - PARKING_WEEKLY : wt;
+  var curParkingAmt = weekParkingAmount(curSat);
+  var hasParking = curParkingAmt > 0;
+  var weekNet = wt - curParkingAmt;
   var allUnpaid = unpaidDays();
   var bal = getBalance();
   var showPayment = allUnpaid.length > 0 || bal > 0.50;
@@ -975,8 +1004,8 @@ function renderWeek(el) {
       h += '<div class="mt-1"><span class="text-sm text-orange-600">Overtime: +' + fmt$(otPremium) + ' = ' + fmt$(running) + '</span></div>';
     }
     if (hasParking) {
-      running -= PARKING_WEEKLY;
-      h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(PARKING_WEEKLY) + ' = ' + fmt$(running) + '</span></div>';
+      running -= curParkingAmt;
+      h += '<div class="mt-1"><span class="text-sm text-green-600">Parking: -' + fmt$(curParkingAmt) + ' = ' + fmt$(running) + '</span></div>';
     }
     h += '<div class="mt-2 pt-2 border-t border-green-300"><span class="font-bold text-lg text-green-800">Week Total: ' + fmt$(weekNet) + '</span></div>';
     h += '</div>';
@@ -1277,7 +1306,7 @@ function renderHist(el) {
     var blockParking = 0;
     var blockHrs = 0;
     var blockOt = 0;
-    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; blockHrs += w.hrs; blockOt += w.ot; if (weekHasParking(w.key)) blockParking += PARKING_WEEKLY; });
+    block.weeks.forEach(function(w) { totalDayCount += w.days.length; blockTotal += w.tot; blockHrs += w.hrs; blockOt += w.ot; blockParking += weekParkingAmount(w.key); });
     var blockNet = blockTotal - blockParking;
     var allPaid = block.weeks.every(function(w) { return w.allPaid; });
     var multiWeek = block.weeks.length > 1;
