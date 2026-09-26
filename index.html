@@ -671,14 +671,14 @@ function weekParkingAmount(satKey) {
   var sat = new Date(satKey + 'T12:00:00');
   // Before PARKING_MONTHLY_START: weekly deduction
   if (satKey < PARKING_MONTHLY_START) return PARKING_WEEKLY;
-  // Monthly: deduct full amount on first parking week of the month only
-  var month = sat.getMonth(), year = sat.getFullYear();
-  var d = new Date(year, month, 1, 12);
-  while (d < sat) {
-    if (d.getDay() === 6 && weekHasParking(ds(d))) return 0; // earlier Sat this month has parking
-    d.setDate(d.getDate() + 1);
+  // Monthly: deduct on the week that contains the 1st of the month
+  // Find which month's 1st falls in this Sat-Fri week
+  var fri = new Date(sat); fri.setDate(fri.getDate() + 6);
+  var month1st = null;
+  for (var dd = new Date(sat); dd <= fri; dd.setDate(dd.getDate() + 1)) {
+    if (dd.getDate() === 1) { month1st = dd; break; }
   }
-  return PARKING_MONTHLY;
+  return month1st ? PARKING_MONTHLY : 0;
 }
 // Outstanding Friday shortfall from old payments — returns 0 once a newer payment covers it
 function fridayAdjustmentOutstanding() {
