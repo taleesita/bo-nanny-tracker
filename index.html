@@ -669,11 +669,10 @@ function weekHasParking(satKey) {
 function weekParkingAmount(satKey) {
   if (!weekHasParking(satKey)) return 0;
   var sat = new Date(satKey + 'T12:00:00');
-  // Before PARKING_MONTHLY_START: weekly deduction
-  if (satKey < PARKING_MONTHLY_START) return PARKING_WEEKLY;
-  // Monthly: deduct on the week that contains the 1st of the month
-  // Find which month's 1st falls in this Sat-Fri week
+  // Before PARKING_MONTHLY_START: weekly deduction (check week's Friday, not Saturday)
   var fri = new Date(sat); fri.setDate(fri.getDate() + 6);
+  if (ds(fri) < PARKING_MONTHLY_START) return PARKING_WEEKLY;
+  // Monthly: deduct on the week that contains the 1st of the month
   var month1st = null;
   for (var dd = new Date(sat); dd <= fri; dd.setDate(dd.getDate() + 1)) {
     if (dd.getDate() === 1) { month1st = dd; break; }
