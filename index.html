@@ -248,7 +248,13 @@ function loadFromFirestore() {
     } else {
       days = serverDays;
       pmts = serverPmts;
-      if (Object.keys(serverCats).length > 0) CATS = serverCats;
+      if (Object.keys(serverCats).length > 0) {
+        // Merge: hardcoded CATS are the base, server overrides existing keys, but new hardcoded keys are kept
+        var merged = {};
+        Object.keys(CATS).forEach(function(k) { merged[k] = CATS[k]; });
+        Object.keys(serverCats).forEach(function(k) { merged[k] = serverCats[k]; });
+        CATS = merged;
+      }
       _dataLoaded = true;
       render();
     }
@@ -286,8 +292,13 @@ function startRealtimeSync() {
     if (!doc.exists || doc.metadata.hasPendingWrites) return;
     try {
       var c = JSON.parse(doc.data().items);
-      if (JSON.stringify(c) !== JSON.stringify(CATS)) {
-        CATS = c; _remoteUpdate = true; render(); _remoteUpdate = false;
+      // Merge server cats with hardcoded defaults so new code categories aren't lost
+      var merged = {};
+      var DEFAULTS = {regular:{label:'Regular Work Day',color:'bg-blue-100 text-blue-700',calc:'manual'},'vacation-family':{label:'Vacation (Family)',color:'bg-purple-100 text-purple-700',calc:'auto'},'vacation-nanny':{label:'Vacation (Nanny)',color:'bg-orange-100 text-orange-700',calc:'auto'},'vacation-nanny-unpaid':{label:'Vacation (Nanny) - Unpaid',color:'bg-orange-100 text-orange-600',calc:'zero'},holiday:{label:'Holiday',color:'bg-amber-100 text-amber-700',calc:'auto'},snow:{label:'Snow Day',color:'bg-cyan-100 text-cyan-700',calc:'auto'},gift:{label:'Gift/Bonus',color:'bg-pink-100 text-pink-700',calc:'manual'}};
+      Object.keys(DEFAULTS).forEach(function(k) { merged[k] = DEFAULTS[k]; });
+      Object.keys(c).forEach(function(k) { merged[k] = c[k]; });
+      if (JSON.stringify(merged) !== JSON.stringify(CATS)) {
+        CATS = merged; _remoteUpdate = true; render(); _remoteUpdate = false;
       }
     } catch(e) {}
   }));
