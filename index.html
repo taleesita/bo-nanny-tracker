@@ -338,6 +338,7 @@ var CATS = {
   regular:           {label:'Regular Work Day',  color:'bg-blue-100 text-blue-700',    calc:'manual'},
   'vacation-family': {label:'Vacation (Family)', color:'bg-purple-100 text-purple-700', calc:'auto'},
   'vacation-nanny':  {label:'Vacation (Nanny)',  color:'bg-orange-100 text-orange-700', calc:'auto'},
+  'vacation-nanny-unpaid': {label:'Vacation (Nanny) - Unpaid', color:'bg-orange-100 text-orange-600', calc:'zero'},
   holiday:           {label:'Holiday',           color:'bg-amber-100 text-amber-700',   calc:'auto'},
   snow:              {label:'Snow Day',          color:'bg-cyan-100 text-cyan-700',     calc:'auto'},
   gift:              {label:'Gift/Bonus',        color:'bg-pink-100 text-pink-700',     calc:'manual'}
@@ -607,8 +608,10 @@ function effectiveHours(dy) {
   if (dy.c === 'regular' && dy.w === 'Fri' && dateStr >= FRIDAY_MIN_START) hrs = Math.max(hrs, DHRS.Fri || 5);
   return hrs;
 }
+function isZero(catKey) { var c = CATS[catKey]; return c && c.calc === 'zero'; }
 function dayTotal(dy) {
   if (!dy || dy.st === '') return 0;
+  if (isZero(dy.c)) return 0;
   if (isAuto(dy.c)) return RATE * (DHRS[dy.w] || 8);
   return RATE * effectiveHours(dy) + (dy.a || 0);
 }
@@ -1097,7 +1100,7 @@ function renderWeek(el) {
 
 function renderDayCard(dy) {
   var tot = dayTotal(dy);
-  var addons = isAuto(dy.c) ? 0 : (dy.a || 0);
+  var addons = (isAuto(dy.c) || isZero(dy.c)) ? 0 : (dy.a || 0);
   var isEmpty = (dy.st === '');
   var bdr = dy.st === 'paid' ? 'border-green-400' : dy.st === 'unpaid' ? 'border-amber-400' : 'border-gray-200';
   var isEditing = (editingDate === dy.d);
@@ -1131,7 +1134,9 @@ function renderDayCard(dy) {
 
   // ROW 3: Hours (fixed height)
   h += '<div class="card-row text-xs text-gray-500">';
-  if (dy.s && dy.e) {
+  if (isZero(dy.c) && !isEmpty) {
+    h += 'Unpaid';
+  } else if (dy.s && dy.e) {
     h += fmtHours(dy);
   } else if (isAuto(dy.c) && !isEmpty) {
     h += (DHRS[dy.w] || 8) + 'h (default)';
@@ -1144,7 +1149,9 @@ function renderDayCard(dy) {
   // ROW 4: Breakdown (fixed)
   h += '<div class="card-row text-xs text-gray-400 border-t mt-2 pt-1">';
   if (!isEmpty) {
-    if (isAuto(dy.c)) {
+    if (isZero(dy.c)) {
+      h += '$0 (unpaid day)';
+    } else if (isAuto(dy.c)) {
       h += (DHRS[dy.w] || 8) + 'h &times; $' + RATE;
     } else {
       var effH = effectiveHours(dy);
@@ -1423,7 +1430,12 @@ function onTimeChange() {
 function onEditCatChange() {
   var cat = document.getElementById('ed-cat').value;
   var dy = findDay(editingDate); if (!dy) return;
-  if (isAuto(cat)) {
+  if (isZero(cat)) {
+    document.getElementById('ed-start').value = '';
+    document.getElementById('ed-end').value = '';
+    document.getElementById('ed-hours').value = 0;
+    document.getElementById('ed-addons').value = 0;
+  } else if (isAuto(cat)) {
     document.getElementById('ed-start').value = '';
     document.getElementById('ed-end').value = '';
     document.getElementById('ed-hours').value = DHRS[dy.w] || 8;
